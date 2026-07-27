@@ -1,0 +1,1363 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>철근 스캔 분석 — 크로핑 · 검출 · 3D 모델</title>
+<style>
+/* ============================================================
+   Design: engineering document console — a white letterheaded
+   control rail (BriconLab-navy header, cobalt primary, square
+   corners, mono numerals) beside a paper drafting-sheet viewport.
+   ============================================================ */
+:root{
+  --ground:#E9EDF2; --panel:#FFFFFF; --panel-2:#F3F5F8; --line:#DCE1E8; --line-2:#C6CED8;
+  --ink:#1C2530; --ink-dim:#515D6C; --ink-faint:#6C7784;
+  --navy:#002961; --accent:#1245D8; --accent-hi:#2E5BE4; --accent-ink:#FFFFFF;
+  --ok:#14814B; --warn:#96660F; --bad:#C03A28;
+  --sheet:#FAFBFC; --sheet-grid:#EBEEF2; --sheet-grid-2:#DDE3E9;
+  --sheet-ink:#2E3742; --sheet-dim:#5F6B7A; --sheet-line:#D7DDE4; --sheet-num:#1245D8;
+  --mono:"Cascadia Code",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --r:3px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:13px/1.55 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+button,input,select{font-family:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+#app{display:flex;height:100%}
+
+/* ---- console rail (white, letterheaded) ---- */
+#rail{width:346px;flex:0 0 346px;background:var(--panel);border-right:1px solid var(--line);
+  overflow-y:auto;display:flex;flex-direction:column}
+#rail::-webkit-scrollbar{width:9px}
+#rail::-webkit-scrollbar-thumb{background:#B9C2CE;border-radius:0}
+.brand{padding:14px 18px 13px;background:#fff;border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.logo svg{width:26px;height:26px;flex:0 0 26px;display:block}
+.logo .wn{font:800 13.5px/1 var(--sans);color:var(--navy);letter-spacing:.1em;white-space:nowrap}
+.logo .wt{margin-top:3px;font:500 7.3px/1.3 var(--sans);color:#5A6B85;letter-spacing:.02em;white-space:nowrap}
+.brand h1{margin:0;font:650 15px/1.3 var(--sans);letter-spacing:-.01em;color:var(--navy)}
+
+.stage{border-bottom:1px solid var(--line);padding:15px 18px}
+.stage:last-child{border-bottom:0}
+.stage > h2{margin:0 0 11px;font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-dim);display:flex;align-items:center;gap:8px}
+.stage > h2 b{display:grid;place-items:center;width:17px;height:17px;border-radius:2px;
+  background:var(--navy);border:1px solid var(--navy);color:#fff;
+  font-size:9.5px;font-weight:700}
+
+label{display:block;font:500 11px/1.4 var(--sans);color:var(--ink-dim);margin:11px 0 5px}
+label:first-of-type{margin-top:0}
+label .v{float:right;font:600 11px/1.4 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+
+button.btn{display:block;width:100%;margin-top:7px;padding:8px 11px;border-radius:var(--r);
+  background:#fff;border:1px solid var(--line-2);color:var(--ink);
+  font:500 12px/1.3 var(--sans);cursor:pointer;transition:background .13s,border-color .13s,color .13s}
+button.btn:hover:not(:disabled){background:var(--panel-2);border-color:#98A5B5;color:var(--navy)}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+button.btn.key{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:650}
+button.btn.key:hover:not(:disabled){background:var(--accent-hi);border-color:var(--accent-hi);color:#fff}
+button.btn.ghost{background:transparent}
+.pair{display:flex;gap:7px}
+.pair button.btn{margin-top:0}
+
+input[type=range]{width:100%;margin:0;accent-color:var(--accent);height:18px}
+input[type=file]{display:none}
+input[type=text],input[type=number],select{width:100%;padding:7px 9px;border-radius:var(--r);
+  background:#fff;border:1px solid var(--line-2);color:var(--ink);font:500 12px/1.3 var(--mono)}
+input[type=text]:focus,input[type=number]:focus,select:focus{border-color:var(--accent)}
+input[type=number]{padding:5px 7px}
+select{appearance:auto}
+
+.readout{display:flex;justify-content:space-between;gap:10px;
+  font:11.5px/1.85 var(--mono);font-variant-numeric:tabular-nums}
+.readout span:first-child{color:var(--ink-faint)}
+.readout span:last-child{color:var(--ink)}
+.readout .em{color:var(--accent);font-weight:600}
+
+canvas.hist{width:100%;height:72px;display:block;background:#fff;
+  border:1px solid var(--line);border-radius:var(--r)}
+.hist-wrap{margin-top:5px}
+.note{font-size:10.5px;line-height:1.55;color:var(--ink-faint);margin-top:8px}
+.note b{color:var(--ink-dim);font-weight:600}
+.note.warn{color:var(--warn)}
+
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:2px;
+  font:600 10.5px/1.4 var(--mono);letter-spacing:.02em}
+.chip::before{content:"";width:6px;height:6px;border-radius:1px;background:currentColor}
+.chip.ok{background:rgba(20,129,75,.07);border:1px solid rgba(20,129,75,.35);color:var(--ok)}
+.chip.warn{background:rgba(150,102,15,.07);border:1px solid rgba(150,102,15,.35);color:var(--warn)}
+.chip.bad{background:rgba(192,58,40,.07);border:1px solid rgba(192,58,40,.35);color:var(--bad)}
+.chip.idle{background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink-faint)}
+.verdict{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.verdict .m{font:11.5px/1.4 var(--mono);color:var(--ink-dim);font-variant-numeric:tabular-nums}
+
+details.sub{margin-top:9px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel-2)}
+details.sub summary{padding:7px 11px;cursor:pointer;font:600 11px/1.4 var(--sans);color:var(--ink-dim);
+  list-style:none;user-select:none}
+details.sub summary::before{content:"▸ ";color:var(--accent)}
+details.sub[open] summary::before{content:"▾ "}
+details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
+.tgrid{display:grid;grid-template-columns:1fr 78px;gap:6px 8px;align-items:center;margin-top:8px}
+.tgrid span{font:500 10.5px/1.35 var(--sans);color:var(--ink-dim)}
+
+.result{margin-top:9px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--panel-2);font:11.5px/1.8 var(--mono);font-variant-numeric:tabular-nums;display:none}
+.result.show{display:block}
+.result .hl{color:var(--navy);font-weight:700}
+.result .row{display:flex;justify-content:space-between;gap:8px}
+.result .row span:first-child{color:var(--ink-dim)}
+
+.srv-status{margin-top:8px;font:11px/1.5 var(--mono);color:var(--ink-faint);word-break:break-all}
+.srv-status.ok{color:var(--ok)} .srv-status.bad{color:var(--bad)} .srv-status.busy{color:var(--warn)}
+
+/* ---- drafting-sheet viewport ---- */
+#stage{flex:1;position:relative;min-width:0;background:
+  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  var(--sheet)}
+#gl{width:100%;height:100%;display:block}
+#hud{position:absolute;top:14px;left:14px;padding:9px 12px;border-radius:var(--r);
+  background:rgba(255,255,255,.86);border:1px solid var(--sheet-line);backdrop-filter:blur(7px);
+  box-shadow:0 1px 4px rgba(30,40,55,.08);
+  font:11.5px/1.75 var(--mono);font-variant-numeric:tabular-nums;pointer-events:none;color:var(--sheet-ink)}
+#hud .k{color:var(--sheet-dim)}
+#hud .n{color:var(--sheet-num);font-weight:600}
+#views{position:absolute;top:14px;right:14px;display:flex;gap:0;border:1px solid var(--sheet-line);
+  border-radius:var(--r);overflow:hidden;box-shadow:0 1px 4px rgba(30,40,55,.08)}
+#views button{padding:7px 13px;border:0;border-right:1px solid var(--sheet-line);
+  background:rgba(255,255,255,.86);color:var(--sheet-dim);font:500 11.5px/1 var(--mono);cursor:pointer;
+  backdrop-filter:blur(7px);transition:color .13s,background .13s}
+#views button:last-child{border-right:0}
+#views button:hover{color:var(--sheet-num);background:#fff}
+#tip{position:absolute;bottom:14px;left:14px;font:11px/1.5 var(--mono);color:var(--sheet-dim);
+  pointer-events:none}
+#legend{position:absolute;bottom:14px;right:14px;padding:8px 11px;border-radius:var(--r);
+  background:rgba(255,255,255,.86);border:1px solid var(--sheet-line);backdrop-filter:blur(7px);
+  box-shadow:0 1px 4px rgba(30,40,55,.08);font:10.5px/1.8 var(--mono);color:var(--sheet-ink);display:none}
+#legend.show{display:block}
+#legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+/* ---- welcome (drafting sheet, empty state) ----
+   Opaque: it must fully cover the HUD/view buttons underneath (they are
+   dead until data loads because #welcome intercepts pointer events). */
+#welcome{position:absolute;inset:0;display:grid;place-items:center;padding:28px;background:
+  radial-gradient(85% 65% at 50% 40%,rgba(255,255,255,.92) 0%,rgba(255,255,255,0) 72%),
+  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  var(--sheet)}
+#welcome.gone{display:none}
+#welcome.over{background:
+  radial-gradient(85% 65% at 50% 40%,rgba(18,69,216,.13) 0%,rgba(18,69,216,.04) 72%),
+  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
+  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
+  var(--sheet)}
+.wrap{text-align:center}
+.cta{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.cta button{padding:13px 24px;border-radius:var(--r);cursor:pointer;font:600 13.5px/1 var(--sans);
+  border:1px solid var(--line-2);background:#fff;color:var(--sheet-ink);
+  box-shadow:0 1px 4px rgba(30,40,55,.08);transition:background .13s,border-color .13s,color .13s}
+.cta button:hover{border-color:#98A5B5;color:var(--navy)}
+.cta button.key{background:var(--accent);border-color:var(--accent);color:#fff}
+.cta button.key:hover{background:var(--accent-hi);color:#fff}
+
+@media (max-width:860px){
+  #app{flex-direction:column}
+  #rail{width:100%;flex:0 0 auto;max-height:47%;border-right:0;border-bottom:1px solid var(--line)}
+  #stage{flex:1}
+}
+</style>
+
+<div id="app">
+  <aside id="rail">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+          <path d="M2 38 L8.5 38 A6.5 6.5 0 0 0 2 31.5 Z" fill="#002961"/>
+          <path d="M14.5 38 A12.5 12.5 0 0 0 2 25.5" stroke="#002961" stroke-width="3.2"/>
+          <path d="M20.5 38 A18.5 18.5 0 0 0 2 19.5" stroke="#002961" stroke-width="3.2"/>
+          <path d="M26.5 38 A24.5 24.5 0 0 0 2 13.5" stroke="#002961" stroke-width="3.2"/>
+          <path d="M32.5 38 A30.5 30.5 0 0 0 2 7.5" stroke="#002961" stroke-width="3.2"/>
+          <path d="M38.5 38 A36.5 36.5 0 0 0 2 1.5" stroke="#002961" stroke-width="3.2"/>
+        </svg>
+        <div>
+          <div class="wn">BRICON LAB</div>
+          <div class="wt">R&amp;D Bridging and Technology Consulting Lab.</div>
+        </div>
+      </div>
+      <h1>철근 스캔 분석</h1>
+    </div>
+
+    <div class="stage">
+      <h2><b>1</b>점군 불러오기</h2>
+      <button class="btn key" id="btnOpen">PLY 파일 열기</button>
+      <button class="btn ghost" id="btnSample">샘플 데이터로 체험</button>
+      <input type="file" id="file" accept=".ply">
+
+      <details class="sub" id="srvBox">
+        <summary>서버에서 가져오기 (BriconLab)</summary>
+        <div class="inner">
+          <label>서버 주소</label>
+          <input type="text" id="srvBase" spellcheck="false">
+          <label>시공 현장</label>
+          <select id="srvSite" disabled><option>— 목록을 불러오세요 —</option></select>
+          <button class="btn" id="btnSites">현장 목록 불러오기</button>
+          <label>스캔 파일명 (업로드 시 서버가 부여한 이름)</label>
+          <input type="text" id="srvFile" placeholder="예: e0ad4447…_020130.ply" spellcheck="false">
+          <button class="btn key" id="btnFetch">서버에서 PLY 가져오기</button>
+          <div class="srv-status" id="srvStatus"></div>
+          <p class="note" id="srvNote"></p>
+        </div>
+      </details>
+
+      <div style="margin-top:11px">
+        <div class="readout"><span>점 개수</span><span class="em" id="statCount">—</span></div>
+        <div class="readout"><span>색상</span><span id="statColor">—</span></div>
+        <div class="readout"><span>범위 X·Y·Z</span><span id="statSize">—</span></div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h2><b>2</b>축 정렬</h2>
+      <button class="btn" id="btnAuto" disabled>격자 방향 자동 정렬</button>
+      <label>회전 미세조정 (수직축 기준)<span class="v" id="yawVal">0.0°</span></label>
+      <input type="range" id="yaw" min="-90" max="90" step="0.5" value="0" disabled>
+      <p class="note">철근이 화면의 가로·세로와 나란해지면 정렬 완료. <b>위에서 보기</b>로 확인하세요.</p>
+    </div>
+
+    <div class="stage">
+      <h2><b>3</b>크로핑</h2>
+      <label>높이 — 철근 층 선택<span class="v" id="yRangeVal">—</span></label>
+      <div class="hist-wrap"><canvas class="hist" id="histY"></canvas></div>
+      <input type="range" id="yMin" min="0" max="1000" value="0" disabled>
+      <input type="range" id="yMax" min="0" max="1000" value="1000" disabled>
+      <button class="btn" id="btnLayer" disabled>철근 층 자동 선택</button>
+      <label>가로<span class="v" id="xRangeVal">—</span></label>
+      <input type="range" id="xMin" min="0" max="1000" value="0" disabled>
+      <input type="range" id="xMax" min="0" max="1000" value="1000" disabled>
+      <label>깊이<span class="v" id="zRangeVal">—</span></label>
+      <input type="range" id="zMin" min="0" max="1000" value="0" disabled>
+      <input type="range" id="zMax" min="0" max="1000" value="1000" disabled>
+      <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
+      <div class="readout" style="margin-top:9px"><span>남은 점</span><span class="em" id="statKept">—</span></div>
+      <div class="verdict" style="margin-top:9px">
+        <span class="chip idle" id="quality">대기</span>
+        <span class="m" id="qualityMeta">—</span>
+      </div>
+      <label>가로 방향 밀도</label>
+      <div class="hist-wrap"><canvas class="hist" id="histX"></canvas></div>
+      <label>깊이 방향 밀도</label>
+      <div class="hist-wrap"><canvas class="hist" id="histZ"></canvas></div>
+      <p class="note">봉우리 하나가 철근 하나입니다. <b>봉우리가 뚜렷하게 분리</b>되면 검출이 잘 됩니다.</p>
+    </div>
+
+    <div class="stage">
+      <h2><b>4</b>철근 검출</h2>
+      <button class="btn key" id="btnDetect" disabled>철근 검출 실행</button>
+      <details class="sub">
+        <summary>검출 필터 임계값</summary>
+        <div class="inner">
+          <div class="tgrid">
+            <span>① 층 격자성 최소 (배)</span><input type="number" id="tGrid" step="0.1" min="1" max="10">
+            <span>② 벽 점유율 최대 (0–1)</span><input type="number" id="tWall" step="0.05" min="0.1" max="1">
+            <span>③ 단면 폭 최대 (mm)</span><input type="number" id="tIqr" step="1" min="5" max="40">
+            <span>최소 간격 (mm)</span><input type="number" id="tSpac" step="5" min="20" max="300">
+            <span>최소 길이 (cm)</span><input type="number" id="tLen" step="1" min="5" max="100">
+            <span>감도 % (낮을수록 민감)</span><input type="number" id="tProm" step="1" min="1" max="50">
+          </div>
+          <button class="btn ghost" id="btnTunDefault">기본값 복원</button>
+        </div>
+      </details>
+      <div class="result" id="detResult"></div>
+      <p class="note">크로핑된 점만 분석합니다. 정렬(2단계)을 하지 않았으면 자동 정렬 후 검출합니다.</p>
+    </div>
+
+    <div class="stage">
+      <h2><b>5</b>3D 모델 · 내보내기</h2>
+      <div class="pair">
+        <button class="btn" id="btnShowCloud">점군 · 표시</button>
+        <button class="btn" id="btnShowModel">모델 · 표시</button>
+      </div>
+      <button class="btn key" id="btnExpModel" disabled>철근 모델 저장 (OBJ + JSON)</button>
+      <label>철근 지름 (mm) — USDZ 모델 굵기<span class="v" id="diaVal">16</span></label>
+      <input type="number" id="barDia" value="16" min="6" max="51" step="1">
+      <button class="btn key" id="btnExpUsdz" disabled>USDZ 저장 (LHRebarAR 앱용)</button>
+      <button class="btn" id="btnUpUsdz" disabled>USDZ 서버 업로드</button>
+      <div class="srv-status" id="upStatus"></div>
+      <button class="btn" id="btnExport" disabled>크롭된 PLY 저장</button>
+      <div class="pair" style="margin-top:7px">
+        <button class="btn" id="btnFrame">좌표 · 정렬된 축</button>
+        <button class="btn" id="btnHide">범위 밖 · 흐리게</button>
+      </div>
+      <div class="pair" style="margin-top:7px">
+        <button class="btn" id="btnColor">색상 · 높이</button>
+        <button class="btn ghost" id="btnPs">점 크기 · 2</button>
+      </div>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="gl"></canvas>
+    <div id="hud">
+      <div><span class="k">정렬</span> <span class="n" id="hudYaw">0.0°</span></div>
+      <div><span class="k">남은 점</span> <span class="n" id="hudKept">0</span></div>
+      <div id="hudDetRow" style="display:none"><span class="k">철근</span> <span class="n" id="hudDet">0</span></div>
+    </div>
+    <div id="views">
+      <button data-view="top">위</button>
+      <button data-view="front">전면</button>
+      <button data-view="side">측면</button>
+      <button data-view="iso">3D</button>
+    </div>
+    <div id="tip">드래그 회전 · 휠 확대</div>
+    <div id="legend">
+      <div><i style="background:#FF3333"></i>상면 세로 <i style="background:#C2610A;margin-left:8px"></i>상면 가로</div>
+      <div><i style="background:#3366FF"></i>하면 세로 <i style="background:#008B8B;margin-left:8px"></i>하면 가로</div>
+      <div id="legendMid" style="display:none"><i style="background:#9933FF"></i>중간층 세로 <i style="background:#148A42;margin-left:8px"></i>중간층 가로</div>
+    </div>
+
+    <div id="welcome">
+      <div class="wrap">
+        <div class="cta">
+          <button class="key" id="ctaOpen">PLY 파일 열기</button>
+          <button id="ctaSample">샘플 데이터로 체험</button>
+          <button id="ctaServer">서버에서 가져오기</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const S={n:0,pos:null,col:null,hasColor:false,yaw:0,bounds:null,crop:null,sample:null,kept:0,
+  colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,
+  det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
+  cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
+const $=id=>document.getElementById(id);
+
+/* ---------- PLY ---------- */
+const TS={char:1,uchar:1,int8:1,uint8:1,short:2,ushort:2,int16:2,uint16:2,
+  int:4,uint:4,int32:4,uint32:4,float:4,float32:4,double:8,float64:8};
+function readT(dv,o,t,le){switch(t){
+  case'char':case'int8':return dv.getInt8(o); case'uchar':case'uint8':return dv.getUint8(o);
+  case'short':case'int16':return dv.getInt16(o,le); case'ushort':case'uint16':return dv.getUint16(o,le);
+  case'int':case'int32':return dv.getInt32(o,le); case'uint':case'uint32':return dv.getUint32(o,le);
+  case'double':case'float64':return dv.getFloat64(o,le); default:return dv.getFloat32(o,le);}}
+
+function parsePLY(buffer){
+  const bytes=new Uint8Array(buffer);
+  const head=new TextDecoder('ascii').decode(bytes.subarray(0,Math.min(bytes.length,65536)));
+  const e=head.indexOf('end_header');
+  if(e<0) throw new Error('PLY 헤더를 찾을 수 없습니다');
+  const bodyStart=head.indexOf('\n',e)+1;
+  let format='ascii',vc=0,props=[],inV=false;
+  for(const raw of head.slice(0,bodyStart).split(/\r?\n/)){
+    const t=raw.trim().split(/\s+/);
+    if(t[0]==='format')format=t[1];
+    else if(t[0]==='element'){inV=(t[1]==='vertex'); if(inV)vc=parseInt(t[2],10);}
+    else if(t[0]==='property'&&inV&&t[1]!=='list')props.push({type:t[1],name:t[2]});
+  }
+  if(!vc) throw new Error('vertex 개수를 읽지 못했습니다');
+  const ix={}; props.forEach((p,i)=>ix[p.name]=i);
+  for(const k of ['x','y','z']) if(!(k in ix)) throw new Error('x/y/z 좌표 속성이 없습니다');
+  const hasColor=('red'in ix)&&('green'in ix)&&('blue'in ix);
+  const pos=new Float32Array(vc*3), col=new Uint8Array(vc*3);
+  if(format==='ascii'){
+    const txt=new TextDecoder('ascii').decode(bytes.subarray(bodyStart));
+    const L=txt.length; let p=0,c=0; const v=new Array(props.length);
+    while(c<vc&&p<L){
+      let f=0;
+      while(f<props.length&&p<L){
+        while(p<L&&txt.charCodeAt(p)<=32)p++;
+        const s=p; while(p<L&&txt.charCodeAt(p)>32)p++;
+        if(p>s)v[f++]=parseFloat(txt.slice(s,p));
+      }
+      if(f<props.length)break;
+      pos[c*3]=v[ix.x];pos[c*3+1]=v[ix.y];pos[c*3+2]=v[ix.z];
+      if(hasColor){col[c*3]=v[ix.red];col[c*3+1]=v[ix.green];col[c*3+2]=v[ix.blue];}
+      c++;
+    }
+    if(c<vc) throw new Error('점 데이터가 헤더 개수보다 적습니다');
+  }else{
+    const le=format.indexOf('little')>=0, dv=new DataView(buffer);
+    let st=0; const off=props.map(p=>{const o=st;st+=TS[p.type]||4;return o;});
+    for(let i=0;i<vc;i++){
+      const b=bodyStart+i*st;
+      pos[i*3]=readT(dv,b+off[ix.x],props[ix.x].type,le);
+      pos[i*3+1]=readT(dv,b+off[ix.y],props[ix.y].type,le);
+      pos[i*3+2]=readT(dv,b+off[ix.z],props[ix.z].type,le);
+      if(hasColor){
+        col[i*3]=readT(dv,b+off[ix.red],props[ix.red].type,le);
+        col[i*3+1]=readT(dv,b+off[ix.green],props[ix.green].type,le);
+        col[i*3+2]=readT(dv,b+off[ix.blue],props[ix.blue].type,le);}
+    }
+  }
+  return{n:vc,pos,col,hasColor};
+}
+
+/* ---------- math ---------- */
+const rotY=(x,z,a)=>{const c=Math.cos(a),s=Math.sin(a);return[x*c+z*s,-x*s+z*c];};
+function buildSample(n,cap){const st=Math.max(1,Math.ceil(n/cap)),o=[];for(let i=0;i<n;i+=st)o.push(i);return Int32Array.from(o);}
+function alignedBounds(){
+  const{pos,sample,yaw}=S;
+  let a=Infinity,b=Infinity,c=Infinity,d=-Infinity,e=-Infinity,f=-Infinity;
+  for(let k=0;k<sample.length;k++){
+    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),y=pos[i+1];
+    if(x<a)a=x;if(x>d)d=x;if(y<b)b=y;if(y>e)e=y;if(z<c)c=z;if(z>f)f=z;
+  }
+  return{min:[a,b,c],max:[d,e,f]};
+}
+function peakiness(v,bin){
+  let mn=Infinity,mx=-Infinity;
+  for(let i=0;i<v.length;i++){if(v[i]<mn)mn=v[i];if(v[i]>mx)mx=v[i];}
+  if(!(mx-mn>bin*4))return 0;
+  const n=Math.min(4096,Math.floor((mx-mn)/bin)+1),h=new Float32Array(n),sc=(n-1)/(mx-mn);
+  for(let i=0;i<v.length;i++)h[((v[i]-mn)*sc)|0]+=1;
+  let s=0;for(let i=0;i<n;i++)s+=h[i]*h[i];
+  return s/v.length;
+}
+function autoYaw(){
+  const sub=buildSample(S.n,40000),ax=new Float32Array(sub.length),az=new Float32Array(sub.length);
+  const score=deg=>{
+    const r=deg*Math.PI/180,c=Math.cos(r),s=Math.sin(r);
+    for(let k=0;k<sub.length;k++){const i=sub[k]*3,x=S.pos[i],z=S.pos[i+2];ax[k]=x*c+z*s;az[k]=-x*s+z*c;}
+    return peakiness(ax,.008)+peakiness(az,.008);
+  };
+  let best=-1,bd=0;
+  for(let d=0;d<90;d+=2){const v=score(d);if(v>best){best=v;bd=d;}}
+  for(let d=bd-2;d<=bd+2;d+=.5){const dd=(d+90)%90,v=score(dd);if(v>best){best=v;bd=dd;}}
+  return bd>45?bd-90:bd;
+}
+function smooth(h,sig){
+  const r=Math.max(1,Math.round(sig*3)),k=new Float32Array(2*r+1);let s=0;
+  for(let i=-r;i<=r;i++){const w=Math.exp(-.5*i*i/(sig*sig));k[i+r]=w;s+=w;}
+  for(let i=0;i<k.length;i++)k[i]/=s;
+  const o=new Float32Array(h.length);
+  for(let i=0;i<h.length;i++){let a=0;
+    for(let j=-r;j<=r;j++)a+=h[Math.min(Math.max(i+j,0),h.length-1)]*k[j+r];o[i]=a;}
+  return o;
+}
+function findPeaks(h,mp,md){
+  const c=[];for(let i=1;i<h.length-1;i++)if(h[i]>h[i-1]&&h[i]>=h[i+1])c.push(i);
+  const prom=p=>{let l=h[p],i=p-1;while(i>=0&&h[i]<=h[p]){l=Math.min(l,h[i]);i--;}
+    let r=h[p],j=p+1;while(j<h.length&&h[j]<=h[p]){r=Math.min(r,h[j]);j++;}
+    return h[p]-Math.max(l,r);};
+  const st=c.filter(p=>prom(p)>=mp).sort((a,b)=>h[b]-h[a]),kept=[];
+  for(const p of st)if(kept.every(q=>Math.abs(q-p)>=md))kept.push(p);
+  return kept.sort((a,b)=>a-b);
+}
+function histogram(axis,nb,respect){
+  const{pos,sample,yaw,crop}=S,b=S.bounds,lo=b.min[axis],hi=b.max[axis];
+  const h=new Float32Array(nb); if(!(hi>lo))return{h,lo,hi};
+  const sc=(nb-1)/(hi-lo);
+  for(let k=0;k<sample.length;k++){
+    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),q=[x,pos[i+1],z];
+    if(respect){let ok=true;
+      for(let a=0;a<3;a++){if(a===axis)continue;if(q[a]<crop.min[a]||q[a]>crop.max[a]){ok=false;break;}}
+      if(!ok)continue;}
+    h[((q[axis]-lo)*sc)|0]+=1;
+  }
+  return{h,lo,hi};
+}
+function countKept(){
+  const{pos,sample,yaw,crop}=S;let c=0;
+  for(let k=0;k<sample.length;k++){
+    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),y=pos[i+1];
+    if(x>=crop.min[0]&&x<=crop.max[0]&&y>=crop.min[1]&&y<=crop.max[1]&&z>=crop.min[2]&&z<=crop.max[2])c++;
+  }
+  return Math.round(c*(S.n/sample.length));
+}
+
+/* ==================================================================
+   Rebar detection — JS port of the app's RebarDetection.swift
+   (density peak-finding + 3 false-positive filters).
+   Runs on the CROPPED cloud in the ALIGNED frame (yaw applied).
+   ================================================================== */
+const DET={voxel:.004,layerBin:.005,slabHalf:.020,layerMinSep:.040,maxLayers:3,
+  barBin:.004,barWinHalf:.015,barMinPts:25,sigma:2.0,wallProbe:.12};
+const TUN_DEFAULT={gridnessMin:2.0,wallOccupancyMax:0.5,maxAcrossIQRMm:20,
+  minSpacingMm:60,minLengthCm:15,prominencePct:8};
+let TUN={...TUN_DEFAULT};
+try{const t=JSON.parse(localStorage.getItem('rebarTunables')||'null');if(t)TUN={...TUN_DEFAULT,...t};}catch(_){}
+
+function tunToUI(){$('tGrid').value=TUN.gridnessMin;$('tWall').value=TUN.wallOccupancyMax;
+  $('tIqr').value=TUN.maxAcrossIQRMm;$('tSpac').value=TUN.minSpacingMm;
+  $('tLen').value=TUN.minLengthCm;$('tProm').value=TUN.prominencePct;}
+function tunFromUI(){
+  const g=(id,lo,hi,fb)=>{const v=parseFloat($(id).value);return isFinite(v)?Math.min(Math.max(v,lo),hi):fb;};
+  TUN.gridnessMin=g('tGrid',1,10,TUN_DEFAULT.gridnessMin);
+  TUN.wallOccupancyMax=g('tWall',.1,1,TUN_DEFAULT.wallOccupancyMax);
+  TUN.maxAcrossIQRMm=g('tIqr',5,40,TUN_DEFAULT.maxAcrossIQRMm);
+  TUN.minSpacingMm=g('tSpac',20,300,TUN_DEFAULT.minSpacingMm);
+  TUN.minLengthCm=g('tLen',5,100,TUN_DEFAULT.minLengthCm);
+  TUN.prominencePct=g('tProm',1,50,TUN_DEFAULT.prominencePct);
+  localStorage.setItem('rebarTunables',JSON.stringify(TUN));
+}
+
+/* cropped points in the aligned frame, as a flat Float32-ish array */
+function collectCroppedAligned(){
+  const{pos,n,yaw,crop}=S,c=Math.cos(yaw),s=Math.sin(yaw),out=[];
+  for(let i=0;i<n;i++){
+    const j=i*3,x0=pos[j],y=pos[j+1],z0=pos[j+2];
+    const x=x0*c+z0*s,z=-x0*s+z0*c;
+    if(x<crop.min[0]||x>crop.max[0]||y<crop.min[1]||y>crop.max[1]||z<crop.min[2]||z>crop.max[2])continue;
+    out.push(x,y,z);
+  }
+  return out;
+}
+/* 4mm voxel downsample — uniformizes dwell-time density bias */
+function voxelDown(flat){
+  const inv=1/DET.voxel,seen=new Map(),out=[];
+  for(let i=0;i<flat.length;i+=3){
+    const x=flat[i],y=flat[i+1],z=flat[i+2];
+    if(!isFinite(x)||!isFinite(y)||!isFinite(z))continue;
+    const xi=Math.floor(x*inv)+1048576,yi=Math.floor(y*inv)+1048576,zi=Math.floor(z*inv)+1048576;
+    if(xi<0||xi>2097151||yi<0||yi>2097151||zi<0||zi>2097151)continue;
+    const k=xi*2097152+zi;
+    let ys=seen.get(k); if(!ys){ys=new Set();seen.set(k,ys);}
+    if(!ys.has(yi)){ys.add(yi);out.push(x,y,z);}
+  }
+  return out;
+}
+function findLayerYs(flat){
+  let mn=Infinity,mx=-Infinity;
+  for(let i=1;i<flat.length;i+=3){const y=flat[i];if(y<mn)mn=y;if(y>mx)mx=y;}
+  if(!(mx-mn>0.01))return flat.length?[(mn+mx)/2]:[];
+  const n=Math.max(8,Math.min(4096,Math.floor((mx-mn)/DET.layerBin)+1));
+  const h=new Float32Array(n),sc=(n-1)/(mx-mn);
+  for(let i=1;i<flat.length;i+=3)h[((flat[i]-mn)*sc)|0]+=1;
+  const sm=smooth(h,DET.sigma);let maxV=0;for(const v of sm)maxV=Math.max(maxV,v);
+  if(maxV<=0)return[];
+  const md=Math.max(1,Math.round(DET.layerMinSep/DET.layerBin));
+  let pk=findPeaks(sm,maxV*.10,md);
+  pk.sort((a,b)=>sm[b]-sm[a]);pk=pk.slice(0,DET.maxLayers).sort((a,b)=>a-b);
+  const bw=(mx-mn)/(n-1);
+  return pk.map(p=>mn+p*bw);
+}
+/* Filter ① metric: max/median contrast of the smoothed in-slab histogram */
+function gridContrast(slab,axisIdx){
+  const co=[];for(let i=0;i<slab.length;i+=3)co.push(slab[i+axisIdx]);
+  let mn=Infinity,mx=-Infinity;for(const v of co){if(v<mn)mn=v;if(v>mx)mx=v;}
+  if(!(mx-mn>0.08))return 0;
+  const n=Math.max(16,Math.min(8192,Math.floor((mx-mn)/DET.barBin)+1));
+  const h=new Float32Array(n),sc=(n-1)/(mx-mn);
+  for(const v of co)h[((v-mn)*sc)|0]+=1;
+  const sm=smooth(h,DET.sigma);
+  const nz=Array.from(sm).filter(v=>v>0).sort((a,b)=>a-b);
+  if(nz.length<=4)return 0;
+  const med=nz[nz.length>>1];
+  return med>0?nz[nz.length-1]/med:0;
+}
+/* Filter ② check: shoulder-bin occupancy above/below the slab in the strip */
+function isVerticalSurface(all,layerY,acrossIdx,pos,runLo,runHi){
+  const binH=.01,nBins=Math.round(2*DET.wallProbe/binH),counts=new Int32Array(nBins);
+  const runIdx=acrossIdx===0?2:0;
+  for(let i=0;i<all.length;i+=3){
+    const across=all[i+acrossIdx];
+    if(Math.abs(across-pos)>DET.barWinHalf)continue;
+    const run=all[i+runIdx];
+    if(run<runLo||run>runHi)continue;
+    const dy=all[i+1]-layerY;
+    if(Math.abs(dy)>=DET.wallProbe)continue;
+    const b=((dy+DET.wallProbe)/binH)|0;
+    if(b>=0&&b<nBins)counts[b]++;
+  }
+  const slabZone=DET.slabHalf+.005;
+  let shoulderBins=0,occupied=0,shoulderPts=0;
+  for(let b=0;b<nBins;b++){
+    const yc=-DET.wallProbe+(b+.5)*binH;
+    if(Math.abs(yc)<=slabZone)continue;
+    shoulderBins++;shoulderPts+=counts[b];
+    if(counts[b]>=2)occupied++;
+  }
+  if(!shoulderBins||shoulderPts<20)return false;
+  return occupied/shoulderBins>TUN.wallOccupancyMax;
+}
+/* bars in one layer, one direction. acrossIdx: 0 (bars at fixed X, run along Z) or 2 */
+function findBars(slab,all,layerY,acrossIdx){
+  const runIdx=acrossIdx===0?2:0;
+  const co=[];for(let i=0;i<slab.length;i+=3)co.push(slab[i+acrossIdx]);
+  let mn=Infinity,mx=-Infinity;for(const v of co){if(v<mn)mn=v;if(v>mx)mx=v;}
+  if(!(mx-mn>0.05))return[];
+  const n=Math.max(16,Math.min(8192,Math.floor((mx-mn)/DET.barBin)+1));
+  const h=new Float32Array(n),sc=(n-1)/(mx-mn);
+  for(const v of co)h[((v-mn)*sc)|0]+=1;
+  const sm=smooth(h,DET.sigma);let maxV=0;for(const v of sm)maxV=Math.max(maxV,v);
+  if(maxV<=0)return[];
+  const md=Math.max(1,Math.round((TUN.minSpacingMm/1000)/DET.barBin));
+  const peaks=findPeaks(sm,maxV*TUN.prominencePct/100,md);
+  const bw=(mx-mn)/(n-1),bars=[];
+  for(const p of peaks){
+    const pos=mn+p*bw,cluster=[];
+    for(let i=0,k=0;i<slab.length;i+=3,k++)
+      if(Math.abs(co[k]-pos)<=DET.barWinHalf)cluster.push(slab[i],slab[i+1],slab[i+2]);
+    const cn=cluster.length/3;
+    if(cn<DET.barMinPts)continue;
+    // actual extent along the bar from percentiles (robust to strays)
+    const runs=[];for(let i=0;i<cluster.length;i+=3)runs.push(cluster[i+runIdx]);
+    runs.sort((a,b)=>a-b);
+    const lo=runs[Math.floor((runs.length-1)*.02)],hi=runs[Math.floor((runs.length-1)*.98)];
+    if(hi-lo<TUN.minLengthCm/100)continue;
+    // Filter ③: diffuse blob fills the ±15mm window; a bar concentrates
+    const acr=[];for(let i=0;i<cluster.length;i+=3)acr.push(cluster[i+acrossIdx]);
+    acr.sort((a,b)=>a-b);
+    const iqr=acr[Math.floor((acr.length-1)*.75)]-acr[Math.floor((acr.length-1)*.25)];
+    if(iqr*1000>TUN.maxAcrossIQRMm)continue;
+    // Filter ②: walls continue far above/below the slab; a rebar doesn't
+    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi))continue;
+    let sa=0,sy=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sy+=cluster[i+1];}
+    const meanA=sa/cn,meanY=sy/cn;
+    const a=[0,meanY,0],b=[0,meanY,0];
+    if(acrossIdx===0){a[0]=meanA;b[0]=meanA;a[2]=lo;b[2]=hi;}
+    else{a[2]=meanA;b[2]=meanA;a[0]=lo;b[0]=hi;}
+    bars.push({positionAcross:meanA,start:a,end:b,pointCount:cn});
+  }
+  return bars;
+}
+function runDetection(){
+  const flat=collectCroppedAligned();
+  const inputPoints=flat.length/3;
+  if(inputPoints<3000)return{err:'점이 부족합니다 (크롭 후 '+inputPoints.toLocaleString()+'개). 범위를 넓히거나 더 스캔하세요.'};
+  const pts=voxelDown(flat);
+  const usedPoints=pts.length/3;
+  if(usedPoints<2000)return{err:'유효한 점이 부족합니다.'};
+  const layerYs=findLayerYs(pts);
+  if(!layerYs.length)return{err:'철근 층을 찾지 못했습니다.'};
+  const rebars=[],groups=[],accepted=[];
+  for(const layerY of layerYs){
+    const slab=[];
+    for(let i=0;i<pts.length;i+=3)
+      if(Math.abs(pts[i+1]-layerY)<=DET.slabHalf)slab.push(pts[i],pts[i+1],pts[i+2]);
+    if(slab.length/3<500)continue;
+    // Filter ①: uniform surfaces (floor/deck) have no grid contrast
+    const contrast=Math.max(gridContrast(slab,0),gridContrast(slab,2));
+    if(contrast<TUN.gridnessMin)continue;
+    accepted.push(layerY);
+    const layerIdx=accepted.length-1;
+    for(const acrossIdx of[0,2]){
+      const found=findBars(slab,pts,layerY,acrossIdx);
+      if(!found.length)continue;
+      const positions=found.map(b=>b.positionAcross).sort((a,b)=>a-b);
+      if(positions.length>=2){
+        const d=[];for(let i=1;i<positions.length;i++)d.push((positions[i]-positions[i-1])*1000);
+        groups.push({layer:layerIdx,acrossAxis:acrossIdx,count:found.length,
+          meanSpacingMm:d.reduce((a,b)=>a+b,0)/d.length,
+          minSpacingMm:Math.min(...d),maxSpacingMm:Math.max(...d)});
+      }else{
+        groups.push({layer:layerIdx,acrossAxis:acrossIdx,count:found.length,
+          meanSpacingMm:0,minSpacingMm:0,maxSpacingMm:0});
+      }
+      for(const b of found)
+        rebars.push({layer:layerIdx,acrossAxis:acrossIdx,start:b.start,end:b.end,pointCount:b.pointCount});
+    }
+  }
+  if(!rebars.length)return{err:'철근을 검출하지 못했습니다. 임계값(감도)을 낮추거나 크롭을 조정해 보세요.'};
+  return{rebars,groups,layerYs:accepted,inputPoints,usedPoints};
+}
+const layerName=(l,total)=>total<=1?'단일층':(l===0?'하면':(l===total-1?'상면':'중간층'));
+/* Palette tuned for the white drafting sheet — every color >=3:1 vs #FAFBFC
+   (WCAG 1.4.11 graphical minimum). Keep in sync with #legend and MAT_DEFS. */
+function barColor(layer,acrossAxis,layerCount){
+  const isTop=layerCount<=1||layer===layerCount-1,isBottom=layerCount>1&&layer===0;
+  if(isTop)return acrossAxis===0?[1,.2,.2]:[.76,.38,.04];      // red / burnt orange
+  if(isBottom)return acrossAxis===0?[.2,.4,1]:[0,.545,.545];   // blue / deep teal
+  return acrossAxis===0?[.6,.2,1]:[.08,.54,.26];               // purple / forest green
+}
+
+/* ---------- WebGL ---------- */
+let gl,prog,bufPos,bufCol,bufOvPos,bufOvCol,ovCount=0,loc={};
+const VS=`attribute vec3 aPos;attribute vec3 aCol;
+uniform mat4 uMVP;uniform float uYaw,uPointSize,uYMin,uYRange;
+uniform vec3 uCropMin,uCropMax;uniform int uColorMode,uHideOutside;
+varying vec3 vCol;varying float vDim;
+void main(){
+  float c=cos(uYaw),s=sin(uYaw);
+  vec3 q=vec3(aPos.x*c+aPos.z*s,aPos.y,-aPos.x*s+aPos.z*c);
+  bool ins=all(greaterThanEqual(q,uCropMin))&&all(lessThanEqual(q,uCropMax));
+  if(!ins&&uHideOutside==1){gl_Position=vec4(2.0,2.0,2.0,1.0);gl_PointSize=0.0;return;}
+  vDim=ins?1.0:0.16;
+  if(uColorMode==0)vCol=aCol;
+  else if(uColorMode==1){
+    // light-viewport height ramp: deep navy -> steel blue -> engineering amber
+    float t=clamp((q.y-uYMin)/max(uYRange,1e-5),0.0,1.0);
+    vCol=mix(vec3(0.13,0.22,0.52),vec3(0.78,0.42,0.05),smoothstep(0.15,0.9,t));
+    vCol=mix(vCol,vec3(0.25,0.55,0.75),(1.0-abs(t-0.5)*2.0)*0.35);
+  } else vCol=vec3(0.25,0.29,0.35);
+  gl_Position=uMVP*vec4(q,1.0);gl_PointSize=uPointSize;}`;
+const FS=`precision mediump float;varying vec3 vCol;varying float vDim;
+void main(){vec2 d=gl_PointCoord-vec2(0.5);
+  if(dot(d,d)>0.25)discard;
+  // dimmed (out-of-crop) points fade toward the paper, not toward black
+  gl_FragColor=vec4(mix(vec3(0.973),vCol,vDim),1.0);}`;
+
+function initGL(){
+  gl=$('gl').getContext('webgl',{antialias:true,alpha:true,premultipliedAlpha:true});
+  if(!gl){alert('이 브라우저에서 WebGL을 사용할 수 없습니다.');return;}
+  const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);
+    if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(sh));return sh;};
+  prog=gl.createProgram();
+  gl.attachShader(prog,mk(gl.VERTEX_SHADER,VS));
+  gl.attachShader(prog,mk(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(prog);gl.useProgram(prog);
+  for(const u of['uMVP','uYaw','uPointSize','uCropMin','uCropMax','uColorMode','uHideOutside','uYMin','uYRange'])
+    loc[u]=gl.getUniformLocation(prog,u);
+  loc.aPos=gl.getAttribLocation(prog,'aPos');loc.aCol=gl.getAttribLocation(prog,'aCol');
+  bufPos=gl.createBuffer();bufCol=gl.createBuffer();
+  bufOvPos=gl.createBuffer();bufOvCol=gl.createBuffer();
+  gl.enable(gl.DEPTH_TEST);gl.clearColor(0,0,0,0); // transparent — CSS drafting grid shows through
+}
+function uploadCloud(){
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufPos);gl.bufferData(gl.ARRAY_BUFFER,S.pos,gl.STATIC_DRAW);
+  const c=new Float32Array(S.n*3);for(let i=0;i<S.n*3;i++)c[i]=S.col[i]/255;
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.bufferData(gl.ARRAY_BUFFER,c,gl.STATIC_DRAW);
+}
+/* dense highlight dots along each detected centerline (aligned frame) */
+function uploadOverlay(){
+  ovCount=0;
+  if(!S.det)return;
+  const lc=S.det.layerYs.length,P=[],C=[];
+  for(const bar of S.det.rebars){
+    const col=barColor(bar.layer,bar.acrossAxis,lc);
+    const dx=bar.end[0]-bar.start[0],dy=bar.end[1]-bar.start[1],dz=bar.end[2]-bar.start[2];
+    const len=Math.hypot(dx,dy,dz),n=Math.max(2,Math.round(len/.005));
+    for(let k=0;k<=n;k++){
+      const t=k/n;
+      P.push(bar.start[0]+dx*t,bar.start[1]+dy*t,bar.start[2]+dz*t);
+      C.push(col[0],col[1],col[2]);
+    }
+  }
+  ovCount=P.length/3;
+  if(!ovCount)return;
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufOvPos);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(P),gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufOvCol);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(C),gl.STATIC_DRAW);
+}
+const persp=(f,a,n,fa)=>{const t=1/Math.tan(f/2);return[t/a,0,0,0,0,t,0,0,0,0,(fa+n)/(n-fa),-1,0,0,2*fa*n/(n-fa),0];};
+function lookAt(e,c,u){
+  const z=[e[0]-c[0],e[1]-c[1],e[2]-c[2]];let l=Math.hypot(z[0],z[1],z[2])||1;z[0]/=l;z[1]/=l;z[2]/=l;
+  const x=[u[1]*z[2]-u[2]*z[1],u[2]*z[0]-u[0]*z[2],u[0]*z[1]-u[1]*z[0]];
+  l=Math.hypot(x[0],x[1],x[2])||1;x[0]/=l;x[1]/=l;x[2]/=l;
+  const y=[z[1]*x[2]-z[2]*x[1],z[2]*x[0]-z[0]*x[2],z[0]*x[1]-z[1]*x[0]];
+  return[x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,
+    -(x[0]*e[0]+x[1]*e[1]+x[2]*e[2]),-(y[0]*e[0]+y[1]*e[1]+y[2]*e[2]),-(z[0]*e[0]+z[1]*e[1]+z[2]*e[2]),1];
+}
+function mul(a,b){const o=new Array(16);
+  for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+j]*b[i*4+k];o[i*4+j]=s;}return o;}
+function draw(){
+  if(!gl)return;
+  const cv=gl.canvas,dpr=Math.min(devicePixelRatio||1,2);
+  const w=cv.clientWidth*dpr|0,h=cv.clientHeight*dpr|0;
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  if(!S.n)return;
+  const{azim,elev,dist,target}=S.cam;
+  const eye=[target[0]+dist*Math.cos(elev)*Math.sin(azim),target[1]+dist*Math.sin(elev),
+             target[2]+dist*Math.cos(elev)*Math.cos(azim)];
+  const up=Math.abs(Math.cos(elev))<.01?[0,0,-1]:[0,1,0];
+  const mvp=mul(persp(50*Math.PI/180,cv.width/cv.height,dist*.002,dist*20),lookAt(eye,target,up));
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  if(S.showCloud){
+    gl.uniform1f(loc.uYaw,S.yaw);gl.uniform1f(loc.uPointSize,S.pointSize*dpr);
+    gl.uniform3fv(loc.uCropMin,new Float32Array(S.crop.min));
+    gl.uniform3fv(loc.uCropMax,new Float32Array(S.crop.max));
+    gl.uniform1i(loc.uColorMode,S.colorMode);gl.uniform1i(loc.uHideOutside,S.hideOutside?1:0);
+    gl.uniform1f(loc.uYMin,S.bounds.min[1]);gl.uniform1f(loc.uYRange,S.bounds.max[1]-S.bounds.min[1]);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufPos);gl.enableVertexAttribArray(loc.aPos);
+    gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.enableVertexAttribArray(loc.aCol);
+    gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.POINTS,0,S.n);
+  }
+  if(S.showModel&&ovCount>0){
+    // overlay is already in the aligned frame — no yaw, no crop, RGB colors
+    gl.uniform1f(loc.uYaw,0);gl.uniform1f(loc.uPointSize,Math.max(6,(S.pointSize+4)*dpr));
+    gl.uniform3fv(loc.uCropMin,new Float32Array([-1e9,-1e9,-1e9]));
+    gl.uniform3fv(loc.uCropMax,new Float32Array([1e9,1e9,1e9]));
+    gl.uniform1i(loc.uColorMode,0);gl.uniform1i(loc.uHideOutside,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufOvPos);gl.enableVertexAttribArray(loc.aPos);
+    gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufOvCol);gl.enableVertexAttribArray(loc.aCol);
+    gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
+    gl.drawArrays(gl.POINTS,0,ovCount);
+  }
+}
+/* ---------- histogram render ---------- */
+function drawHist(id,data,lo2,hi2,stroke){
+  const cv=$(id),dpr=Math.min(devicePixelRatio||1,2);
+  cv.width=cv.clientWidth*dpr;cv.height=cv.clientHeight*dpr;
+  const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
+  if(!data)return;
+  const{h,lo,hi}=data,sm=smooth(h,1.5);
+  let mx=0;for(let i=0;i<sm.length;i++)mx=Math.max(mx,sm[i]);
+  if(mx<=0)return;
+  if(lo2!=null&&hi>lo){
+    const a=(lo2-lo)/(hi-lo)*cv.width,b=(hi2-lo)/(hi-lo)*cv.width;
+    ctx.fillStyle='rgba(226,160,50,.18)';ctx.fillRect(a,0,b-a,cv.height);
+    ctx.strokeStyle='rgba(150,102,15,.9)';ctx.lineWidth=1.2*dpr;
+    ctx.beginPath();ctx.moveTo(a,0);ctx.lineTo(a,cv.height);ctx.moveTo(b,0);ctx.lineTo(b,cv.height);ctx.stroke();
+  }
+  ctx.beginPath();
+  for(let i=0;i<sm.length;i++){
+    const x=i/(sm.length-1)*cv.width,y=cv.height-(sm[i]/mx)*(cv.height-5)-2.5;
+    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+  }
+  ctx.lineTo(cv.width,cv.height);ctx.lineTo(0,cv.height);ctx.closePath();
+  ctx.fillStyle='rgba(18,69,216,.07)';ctx.fill();
+  ctx.beginPath();
+  for(let i=0;i<sm.length;i++){
+    const x=i/(sm.length-1)*cv.width,y=cv.height-(sm[i]/mx)*(cv.height-5)-2.5;
+    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+  }
+  ctx.strokeStyle=stroke;ctx.lineWidth=1.5*dpr;ctx.stroke();
+}
+
+/* ---------- UI ---------- */
+const fmt=v=>Math.abs(v)>=1?v.toFixed(2)+' m':(v*1000).toFixed(0)+' mm';
+const s2v=(a,t)=>S.bounds.min[a]+(S.bounds.max[a]-S.bounds.min[a])*t/1000;
+const v2s=(a,v)=>{const r=S.bounds.max[a]-S.bounds.min[a];return r>0?Math.round((v-S.bounds.min[a])/r*1000):0;};
+function syncSliders(){
+  [['xMin','xMax',0],['yMin','yMax',1],['zMin','zMax',2]].forEach(([a,b,ax])=>{
+    $(a).value=v2s(ax,S.crop.min[ax]);$(b).value=v2s(ax,S.crop.max[ax]);});
+}
+function analysePeaks(axis){
+  const d=histogram(axis,260,true),sm=smooth(d.h,2);
+  let mx=0;for(const v of sm)mx=Math.max(mx,v);
+  if(mx<=0)return{n:0,spacing:null,contrast:0};
+  const bin=(d.hi-d.lo)/(sm.length-1);
+  const pk=findPeaks(sm,mx*.08,Math.max(1,Math.round(.06/bin)));
+  const nz=Array.from(sm).filter(v=>v>0).sort((a,b)=>a-b);
+  const med=nz.length?nz[nz.length>>1]:0;
+  let sp=null;
+  if(pk.length>=2){let t=0;for(let i=1;i<pk.length;i++)t+=(pk[i]-pk[i-1])*bin*1000;sp=t/(pk.length-1);}
+  return{n:pk.length,spacing:sp,contrast:med>0?mx/med:0};
+}
+function refreshStats(){
+  S.kept=countKept();
+  $('statKept').textContent=S.kept.toLocaleString();
+  $('hudKept').textContent=S.kept.toLocaleString();
+  $('xRangeVal').textContent=`${fmt(S.crop.min[0])} ~ ${fmt(S.crop.max[0])}`;
+  $('yRangeVal').textContent=`${fmt(S.crop.min[1])} ~ ${fmt(S.crop.max[1])}`;
+  $('zRangeVal').textContent=`${fmt(S.crop.min[2])} ~ ${fmt(S.crop.max[2])}`;
+  drawHist('histY',histogram(1,220,false),S.crop.min[1],S.crop.max[1],'#1245D8');
+  drawHist('histX',histogram(0,260,true),null,null,'#1245D8');
+  drawHist('histZ',histogram(2,260,true),null,null,'#1245D8');
+  const X=analysePeaks(0),Z=analysePeaks(2);
+  const total=X.n+Z.n,contrast=Math.max(X.contrast,Z.contrast);
+  const chip=$('quality'),meta=$('qualityMeta');
+  let cls='idle',txt='대기';
+  if(total>0){
+    if(total>=6&&contrast>=2.5){cls='ok';txt='분리 양호';}
+    else if(total>=3&&contrast>=1.8){cls='warn';txt='분리 보통';}
+    else{cls='bad';txt='분리 불충분';}
+  }
+  chip.className='chip '+cls;chip.textContent=txt;
+  const sp=[X.spacing,Z.spacing].filter(v=>v!=null);
+  meta.textContent=total?`봉우리 ${X.n}+${Z.n}개`+(sp.length?` · 평균 ${Math.round(sp.reduce((a,b)=>a+b,0)/sp.length)}mm`:''):'—';
+}
+/* detection result becomes stale whenever yaw/crop/data changes */
+function clearDetection(){
+  if(!S.det)return;
+  S.det=null;ovCount=0;
+  $('detResult').classList.remove('show');
+  $('btnExpModel').disabled=true;
+  $('btnExpUsdz').disabled=true;
+  $('btnUpUsdz').disabled=true;
+  $('legend').classList.remove('show');
+  $('hudDetRow').style.display='none';
+}
+function recomputeAligned(keep){
+  const old=S.crop?{min:[...S.crop.min],max:[...S.crop.max]}:null;
+  S.bounds=alignedBounds();
+  if(!keep||!old)S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};
+  else{
+    S.crop={min:[...old.min],max:[...old.max]};
+    for(let a=0;a<3;a++){
+      S.crop.min[a]=Math.max(S.crop.min[a],S.bounds.min[a]);
+      S.crop.max[a]=Math.min(S.crop.max[a],S.bounds.max[a]);
+      if(S.crop.min[a]>=S.crop.max[a]){S.crop.min[a]=S.bounds.min[a];S.crop.max[a]=S.bounds.max[a];}}
+  }
+  const c=S.bounds,span=Math.max(c.max[0]-c.min[0],c.max[1]-c.min[1],c.max[2]-c.min[2]);
+  S.cam.target=[(c.min[0]+c.max[0])/2,(c.min[1]+c.max[1])/2,(c.min[2]+c.max[2])/2];
+  if(!keep)S.cam.dist=span*1.8||5;
+  clearDetection();
+  syncSliders();refreshStats();
+}
+const enableUI=on=>['btnAuto','yaw','yMin','yMax','xMin','xMax','zMin','zMax','btnReset','btnExport','btnLayer','btnDetect']
+  .forEach(id=>$(id).disabled=!on);
+
+function adopt(parsed){
+  S.n=parsed.n;S.pos=parsed.pos;S.col=parsed.col;S.hasColor=parsed.hasColor;
+  S.yaw=0;$('yaw').value=0;$('yawVal').textContent='0.0°';$('hudYaw').textContent='0.0°';
+  S.sample=buildSample(S.n,300000);
+  S.colorMode=parsed.hasColor?0:1;
+  $('btnColor').textContent='색상 · '+(S.colorMode===0?'RGB':'높이');
+  uploadCloud();recomputeAligned(false);
+  const b=S.bounds;
+  $('statCount').textContent=S.n.toLocaleString();
+  $('statColor').textContent=parsed.hasColor?'RGB 있음':'없음';
+  $('statSize').textContent=`${(b.max[0]-b.min[0]).toFixed(2)}·${(b.max[1]-b.min[1]).toFixed(2)}·${(b.max[2]-b.min[2]).toFixed(2)} m`;
+  $('welcome').classList.add('gone');
+  enableUI(true);
+}
+async function loadFile(f){
+  try{ adopt(parsePLY(await f.arrayBuffer())); }
+  catch(e){ alert('PLY를 읽지 못했습니다: '+e.message); }
+}
+function loadSample(){
+  const pts=[];let sd=7;
+  const rnd=()=>(sd=(sd*1103515245+12345)&0x7fffffff)/0x7fffffff;
+  const g=()=>(rnd()+rnd()+rnd()+rnd()-2)/2;
+  const a=20*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
+  const rot=(x,z)=>[x*c-z*s,x*s+z*c];
+  for(let i=0;i<26000;i++){const[X,Z]=rot(rnd()*3,rnd()*2);pts.push([X,-.05+g()*.004,Z,86,92,100]);}
+  for(const y of[0,.12]){
+    for(let i=0;i<21;i++){const x=i*.15;
+      for(let k=0;k<620;k++){const[X,Z]=rot(x+g()*.006,rnd()*2);pts.push([X,y+g()*.005,Z,206,120,72]);}}
+    for(let i=0;i<11;i++){const z=i*.20;
+      for(let k=0;k<620;k++){const[X,Z]=rot(rnd()*3,z+g()*.006);pts.push([X,y+g()*.005,Z,74,168,206]);}}
+  }
+  for(let i=0;i<17000;i++){const[X,Z]=rot(3.05+g()*.004,rnd()*2);pts.push([X,-.05+rnd()*.65,Z,72,78,86]);}
+  const n=pts.length,pos=new Float32Array(n*3),col=new Uint8Array(n*3);
+  pts.forEach((p,i)=>{pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];
+    col[i*3]=p[3];col[i*3+1]=p[4];col[i*3+2]=p[5];});
+  adopt({n,pos,col,hasColor:true});
+}
+
+/* ---------- server (BriconLab) ---------- */
+const SRV={base:localStorage.getItem('srvBase')||'http://api.briconlab.com:50001'};
+function srvStatus(msg,cls){const el=$('srvStatus');el.textContent=msg;el.className='srv-status '+(cls||'');}
+function srvMixedBlocked(){
+  return location.protocol==='https:'&&SRV.base.startsWith('http:');
+}
+function srvGuard(){
+  if(srvMixedBlocked()){
+    srvStatus('HTTPS 페이지에서는 HTTP 서버에 접속할 수 없습니다 (브라우저 차단). 이 파일을 로컬에 저장해 열면 서버 연동이 동작합니다.','bad');
+    return false;
+  }
+  return true;
+}
+async function srvSites(){
+  SRV.base=$('srvBase').value.trim().replace(/\/+$/,'');
+  localStorage.setItem('srvBase',SRV.base);
+  if(!srvGuard())return;
+  srvStatus('현장 목록 조회 중…','busy');
+  try{
+    const r=await fetch(SRV.base+'/analysis/site-list',{signal:AbortSignal.timeout(15000)});
+    const j=await r.json();
+    const list=j.site_list||[];
+    const sel=$('srvSite');sel.innerHTML='';
+    for(const s of list){
+      const o=document.createElement('option');
+      o.value=s.site_id;o.textContent=`${s.site_id} · ${s.site_name}`;
+      sel.appendChild(o);
+    }
+    sel.disabled=!list.length;
+    srvStatus(list.length?`현장 ${list.length}곳`:'등록된 현장이 없습니다',list.length?'ok':'bad');
+  }catch(e){srvStatus('조회 실패: '+e.message,'bad');}
+}
+async function srvFetch(){
+  SRV.base=$('srvBase').value.trim().replace(/\/+$/,'');
+  localStorage.setItem('srvBase',SRV.base);
+  if(!srvGuard())return;
+  const fn=$('srvFile').value.trim();
+  if(!fn){srvStatus('스캔 파일명을 입력하세요','bad');return;}
+  srvStatus('다운로드 시도 중…','busy');
+  // Try candidate download endpoints (requested in api/WEBAPP_BACKEND_REQUEST.md).
+  for(const path of['/analysis/ply-download?filename=','/analysis/ply-file?filename=','/analysis/ply?filename=']){
+    try{
+      const r=await fetch(SRV.base+path+encodeURIComponent(fn),{signal:AbortSignal.timeout(120000)});
+      if(!r.ok)continue;
+      const ct=(r.headers.get('content-type')||'').toLowerCase();
+      if(ct.includes('json'))continue;               // path-info responses are not the file
+      const buf=await r.arrayBuffer();
+      if(buf.byteLength<32)continue;
+      adopt(parsePLY(buf));
+      srvStatus(`다운로드 완료 · ${(buf.byteLength/1048576).toFixed(1)} MB`,'ok');
+      return;
+    }catch(_){}
+  }
+  // No download endpoint yet — explain using ply-path (returns server-side path only).
+  try{
+    const r=await fetch(SRV.base+'/analysis/ply-path?filename='+encodeURIComponent(fn),
+                        {signal:AbortSignal.timeout(15000)});
+    const j=await r.json();
+    if(r.ok&&j.filePath){
+      srvStatus('파일은 서버에 있으나 아직 다운로드 API가 없습니다 (경로: '+j.filePath+'). 백엔드에 다운로드 엔드포인트 추가를 요청한 상태입니다 — 그동안은 PLY 파일을 직접 열어 주세요.','bad');
+    }else{
+      srvStatus('서버에 해당 파일이 없습니다: '+(j.detail||fn),'bad');
+    }
+  }catch(e){srvStatus('서버 접속 실패: '+e.message,'bad');}
+}
+
+/* ---------- detection UI ---------- */
+function showDetection(res){
+  S.det=res;
+  uploadOverlay();
+  const lc=res.layerYs.length,box=$('detResult');
+  let html=`<div class="row"><span>검출 철근</span><span class="hl">${res.rebars.length}개</span></div>`;
+  const gs=[...res.groups].sort((a,b)=>(b.layer-a.layer)||(b.acrossAxis-a.acrossAxis));
+  for(const g of gs){
+    const dir=g.acrossAxis===0?'세로':'가로';
+    const sp=g.count>=2?` · 평균 ${Math.round(g.meanSpacingMm)}mm (${Math.round(g.minSpacingMm)}–${Math.round(g.maxSpacingMm)})`:'';
+    html+=`<div class="row"><span>${layerName(g.layer,lc)} ${dir}</span><span>${g.count}개${sp}</span></div>`;
+  }
+  html+=`<div class="row"><span>층 개수 / 사용 점</span><span>${lc}층 · ${res.usedPoints.toLocaleString()}</span></div>`;
+  box.innerHTML=html;box.classList.add('show');
+  $('btnExpModel').disabled=false;
+  $('btnExpUsdz').disabled=false;
+  $('btnUpUsdz').disabled=false;
+  $('legend').classList.toggle('show',true);
+  $('legendMid').style.display=lc>=3?'':'none';
+  $('hudDetRow').style.display='';
+  $('hudDet').textContent=res.rebars.length;
+}
+function onDetect(){
+  tunFromUI();
+  const btn=$('btnDetect');btn.disabled=true;btn.textContent='검출 중…';
+  setTimeout(()=>{
+    try{
+      // If the grid was never aligned, do it automatically first (stage-2 equivalent).
+      if(S.yaw===0){
+        const d=autoYaw();
+        if(Math.abs(d)>0.9){
+          S.yaw=d*Math.PI/180;
+          $('yaw').value=d.toFixed(1);$('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
+          recomputeAligned(true);
+        }
+      }
+      const res=runDetection();
+      if(res.err)alert(res.err);else showDetection(res);
+    }finally{
+      btn.disabled=false;btn.textContent='철근 검출 실행';
+    }
+  },30);
+}
+
+/* ---------- exports ---------- */
+function dl(name,parts,type){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(parts,{type:type||'application/octet-stream'}));
+  a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+const stamp=()=>{const d=new Date(),p=v=>String(v).padStart(2,'0');
+  return`${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;};
+function detectionPayload(r){
+  const lc=r.layerYs.length;
+  return{
+    detectedAt:stamp(),
+    frame:'aligned',
+    gridAngleDeg:+(S.yaw*180/Math.PI).toFixed(3),
+    layerYs:r.layerYs,
+    inputPoints:r.inputPoints,
+    usedPoints:r.usedPoints,
+    tunables:{...TUN},
+    groups:r.groups.map(g=>({
+      layer:layerName(g.layer,lc),direction:g.acrossAxis===0?'V':'H',count:g.count,
+      meanSpacingMm:+g.meanSpacingMm.toFixed(1),
+      minSpacingMm:+g.minSpacingMm.toFixed(1),
+      maxSpacingMm:+g.maxSpacingMm.toFixed(1)})),
+    bars:r.rebars.map(b=>({
+      layer:layerName(b.layer,lc),direction:b.acrossAxis===0?'V':'H',
+      start:b.start.map(v=>+v.toFixed(4)),end:b.end.map(v=>+v.toFixed(4)),
+      lengthM:+Math.hypot(b.end[0]-b.start[0],b.end[1]-b.start[1],b.end[2]-b.start[2]).toFixed(3),
+      points:b.pointCount}))
+  };
+}
+function exportModel(){
+  const r=S.det; if(!r)return;
+  const lc=r.layerYs.length,st=stamp();
+  let obj='# Detected rebar centerlines (meters, aligned frame; yaw_deg='
+    +(S.yaw*180/Math.PI).toFixed(3)+')\n';
+  let vi=1;
+  for(const b of r.rebars){
+    obj+=`o ${layerName(b.layer,lc)}_${b.acrossAxis===0?'V':'H'}_${(vi>>1)+1}\n`;
+    obj+=`v ${b.start[0]} ${b.start[1]} ${b.start[2]}\n`;
+    obj+=`v ${b.end[0]} ${b.end[1]} ${b.end[2]}\n`;
+    obj+=`l ${vi} ${vi+1}\n`;
+    vi+=2;
+  }
+  dl(`rebar_model_${st}.obj`,[obj],'text/plain');
+  dl(`rebar_report_${st}.json`,[JSON.stringify(detectionPayload(r),null,2)],'application/json');
+}
+
+/* ==================================================================
+   USDZ export — the format LHRebarAR (RealityKit) loads.
+   Requirements from that project's docs: USDZ only, Y-up,
+   metersPerUnit = 1 (true 1:1 scale), materials embedded.
+   Origin is free (the app re-pivots to bottom-center of bbox).
+   Package rules: uncompressed zip, file data 64-byte aligned.
+   ================================================================== */
+const CRC_T=(()=>{const t=new Int32Array(256);
+  for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c;}return t;})();
+function crc32(b){let c=-1;for(let i=0;i<b.length;i++)c=CRC_T[(c^b[i])&255]^(c>>>8);return(c^-1)>>>0;}
+/* minimal store-only zip with usdz 64-byte data alignment (zero-padded 0xFFFF extra field) */
+function usdzZip(files){
+  const chunks=[],central=[];let offset=0;
+  const w16=(a,v)=>a.push(v&255,v>>8&255),w32=(a,v)=>a.push(v&255,v>>8&255,v>>16&255,v>>>24&255);
+  for(const f of files){
+    const nm=new TextEncoder().encode(f.name),crc=crc32(f.data);
+    const pad=(64-((offset+30+nm.length+4)%64))%64,exLen=4+pad;
+    const ex=new Uint8Array(exLen);ex[0]=255;ex[1]=255;ex[2]=pad&255;ex[3]=pad>>8;
+    const h=[80,75,3,4];w16(h,20);w16(h,0);w16(h,0);w16(h,0);w16(h,0);
+    w32(h,crc);w32(h,f.data.length);w32(h,f.data.length);w16(h,nm.length);w16(h,exLen);
+    chunks.push(new Uint8Array(h),nm,ex,f.data);
+    central.push({nm,crc,size:f.data.length,offset});
+    offset+=30+nm.length+exLen+f.data.length;
+  }
+  const cdStart=offset;let cdSize=0;
+  for(const c of central){
+    const r=[80,75,1,2];w16(r,20);w16(r,20);w16(r,0);w16(r,0);w16(r,0);w16(r,0);
+    w32(r,c.crc);w32(r,c.size);w32(r,c.size);w16(r,c.nm.length);w16(r,0);w16(r,0);
+    w16(r,0);w16(r,0);w32(r,0);w32(r,c.offset);
+    chunks.push(new Uint8Array(r),c.nm);cdSize+=46+c.nm.length;
+  }
+  const e=[80,75,5,6];w16(e,0);w16(e,0);w16(e,central.length);w16(e,central.length);
+  w32(e,cdSize);w32(e,cdStart);w16(e,0);
+  chunks.push(new Uint8Array(e));
+  let total=0;for(const c of chunks)total+=c.length;
+  const out=new Uint8Array(total);let p=0;
+  for(const c of chunks){out.set(c,p);p+=c.length;}
+  return out;
+}
+const MAT_DEFS=[  // key, display, diffuseColor — matches barColor() exactly
+  ['TopV','상면 세로',[1,.2,.2]],['TopH','상면 가로',[.76,.38,.04]],
+  ['BotV','하면 세로',[.2,.4,1]],['BotH','하면 가로',[0,.545,.545]],
+  ['MidV','중간층 세로',[.6,.2,1]],['MidH','중간층 가로',[.08,.54,.26]]];
+function matKey(layer,acrossAxis,lc){
+  const isTop=lc<=1||layer===lc-1,isBottom=lc>1&&layer===0;
+  const d=acrossAxis===0?'V':'H';
+  return(isTop?'Top':isBottom?'Bot':'Mid')+d;
+}
+/* one bar = octagonal prism around the centerline, radius r (meters) */
+function barMeshUsda(name,a,b,r,matKey){
+  const dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2],len=Math.hypot(dx,dy,dz)||1e-6;
+  const ax=[dx/len,dy/len,dz/len];
+  const ref=Math.abs(ax[1])>.9?[1,0,0]:[0,1,0];
+  let u=[ax[1]*ref[2]-ax[2]*ref[1],ax[2]*ref[0]-ax[0]*ref[2],ax[0]*ref[1]-ax[1]*ref[0]];
+  const ul=Math.hypot(...u);u=u.map(v=>v/ul);
+  const v=[ax[1]*u[2]-ax[2]*u[1],ax[2]*u[0]-ax[0]*u[2],ax[0]*u[1]-ax[1]*u[0]];
+  const pts=[];
+  for(const end of[a,b])for(let k=0;k<8;k++){
+    const t=k*Math.PI/4,c=Math.cos(t)*r,s=Math.sin(t)*r;
+    pts.push([end[0]+u[0]*c+v[0]*s,end[1]+u[1]*c+v[1]*s,end[2]+u[2]*c+v[2]*s]);
+  }
+  const counts=[],idx=[];
+  for(let k=0;k<8;k++){const k2=(k+1)%8;counts.push(4);idx.push(k,k2,8+k2,8+k);}
+  counts.push(8);for(let k=7;k>=0;k--)idx.push(k);          // cap A (outward)
+  counts.push(8);for(let k=0;k<8;k++)idx.push(8+k);          // cap B
+  let mn=[1/0,1/0,1/0],mx=[-1/0,-1/0,-1/0];
+  for(const p of pts)for(let i=0;i<3;i++){if(p[i]<mn[i])mn[i]=p[i];if(p[i]>mx[i])mx[i]=p[i];}
+  const f=v=>+v.toFixed(5);
+  return`        def Mesh "${name}" {
+            float3[] extent = [(${mn.map(f)}), (${mx.map(f)})]
+            int[] faceVertexCounts = [${counts.join(', ')}]
+            int[] faceVertexIndices = [${idx.join(', ')}]
+            point3f[] points = [${pts.map(p=>`(${p.map(f)})`).join(', ')}]
+            uniform token subdivisionScheme = "none"
+            rel material:binding = </RebarModel/Materials/${matKey}>
+        }
+`;
+}
+function buildUSDZ(r,radiusM){
+  const lc=r.layerYs.length,used=new Set();
+  let meshes='';
+  const names={};
+  for(const bar of r.rebars){
+    const mk=matKey(bar.layer,bar.acrossAxis,lc);used.add(mk);
+    names[mk]=(names[mk]||0)+1;
+    meshes+=barMeshUsda(`${mk}_${String(names[mk]).padStart(2,'0')}`,bar.start,bar.end,radiusM,mk);
+  }
+  let mats='';
+  for(const[key,,col]of MAT_DEFS){
+    if(!used.has(key))continue;
+    mats+=`            def Material "${key}" {
+                token outputs:surface.connect = </RebarModel/Materials/${key}/PBR.outputs:surface>
+                def Shader "PBR" {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor = (${col.join(', ')})
+                    float inputs:roughness = 0.55
+                    float inputs:metallic = 0.2
+                    token outputs:surface
+                }
+            }
+`;
+  }
+  const usda=`#usda 1.0
+(
+    defaultPrim = "RebarModel"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = "As-built rebar model detected from LiDAR scan (aligned frame, yaw_deg=${(S.yaw*180/Math.PI).toFixed(3)})"
+)
+
+def Xform "RebarModel" {
+${meshes}        def Scope "Materials" {
+${mats}        }
+}
+`;
+  return usdzZip([{name:'model.usda',data:new TextEncoder().encode(usda)}]);
+}
+function exportUSDZ(){
+  const r=S.det;if(!r)return;
+  const dia=Math.min(Math.max(parseFloat($('barDia').value)||16,6),51);
+  dl(`rebar_asbuilt_${stamp()}.usdz`,[buildUSDZ(r,dia/2000)],'model/vnd.usdz+zip');
+}
+async function uploadUSDZ(){
+  const r=S.det;if(!r)return;
+  SRV.base=$('srvBase').value.trim().replace(/\/+$/,'')||SRV.base;
+  const st=$('upStatus'),site=$('srvSite');
+  const say=(m,c)=>{st.textContent=m;st.className='srv-status '+(c||'');};
+  if(location.protocol==='https:'&&SRV.base.startsWith('http:')){
+    say('HTTPS 페이지에서는 HTTP 서버 업로드가 차단됩니다. 파일을 로컬에 저장해 여세요.','bad');return;}
+  if(site.disabled||!site.value){say('1단계의 서버 패널에서 현장 목록을 불러와 현장을 선택하세요.','bad');return;}
+  const dia=Math.min(Math.max(parseFloat($('barDia').value)||16,6),51);
+  const blob=new Blob([buildUSDZ(r,dia/2000)],{type:'model/vnd.usdz+zip'});
+  const fname=`rebar_asbuilt_${stamp()}.usdz`;
+  say('업로드 시도 중…','busy');
+  // Candidate endpoints — requested in api/WEBAPP_BACKEND_REQUEST.md (요청 3).
+  for(const path of['/analysis/ar-upload','/analysis/usdz-upload']){
+    try{
+      const fd=new FormData();
+      fd.append('file',blob,fname);
+      fd.append('site_id',site.value);
+      fd.append('source_filename',fname);
+      fd.append('remark','web-tool as-built rebar model'+($('srvFile').value.trim()?' · scan: '+$('srvFile').value.trim():''));
+      const resp=await fetch(SRV.base+path,{method:'POST',body:fd,signal:AbortSignal.timeout(120000)});
+      if(resp.status===404||resp.status===405)continue;
+      const txt=await resp.text();
+      if(resp.ok){say('업로드 완료: '+txt.slice(0,160),'ok');return;}
+      say(`서버 오류 HTTP ${resp.status}: ${txt.slice(0,160)}`,'bad');return;
+    }catch(_){}
+  }
+  say('서버에 USDZ 업로드 API가 아직 없습니다 (백엔드에 요청한 상태 — api/WEBAPP_BACKEND_REQUEST.md 요청 3). 그동안은 "USDZ 저장"으로 파일을 받아 전달하세요.','bad');
+}
+function exportPLY(){
+  const{pos,col,yaw,crop,n,hasColor}=S,keep=[];
+  for(let i=0;i<n;i++){
+    const j=i*3,[x,z]=rotY(pos[j],pos[j+2],yaw),y=pos[j+1];
+    if(x>=crop.min[0]&&x<=crop.max[0]&&y>=crop.min[1]&&y<=crop.max[1]&&z>=crop.min[2]&&z<=crop.max[2])keep.push(i);
+  }
+  if(!keep.length){alert('남은 점이 없습니다. 범위를 넓혀 주세요.');return;}
+  const m=keep.length;
+  const header=`ply\nformat binary_little_endian 1.0\ncomment cropped with rebar-analysis web tool\n`+
+    `comment yaw_deg=${(yaw*180/Math.PI).toFixed(3)} frame=${S.exportAligned?'aligned':'original'}\n`+
+    `element vertex ${m}\nproperty float x\nproperty float y\nproperty float z\n`+
+    `property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n`;
+  const body=new ArrayBuffer(m*15),dv=new DataView(body);
+  for(let k=0;k<m;k++){
+    const i=keep[k],j=i*3;let X,Y,Z;
+    if(S.exportAligned){const r=rotY(pos[j],pos[j+2],yaw);X=r[0];Y=pos[j+1];Z=r[1];}
+    else{X=pos[j];Y=pos[j+1];Z=pos[j+2];}
+    const o=k*15;
+    dv.setFloat32(o,X,true);dv.setFloat32(o+4,Y,true);dv.setFloat32(o+8,Z,true);
+    dv.setUint8(o+12,hasColor?col[j]:200);dv.setUint8(o+13,hasColor?col[j+1]:200);
+    dv.setUint8(o+14,hasColor?col[j+2]:200);
+  }
+  dl(`cropped_${m}pts.ply`,[new TextEncoder().encode(header),body]);
+}
+
+/* events */
+$('btnOpen').onclick=$('ctaOpen').onclick=()=>$('file').click();
+$('btnSample').onclick=$('ctaSample').onclick=loadSample;
+$('ctaServer').onclick=()=>{ // open the rail's server panel and lead the user there
+  const box=$('srvBox');box.open=true;
+  box.scrollIntoView({block:'center'});
+  $('btnSites').focus();
+};
+$('file').onchange=e=>{if(e.target.files[0])loadFile(e.target.files[0]);};
+window.addEventListener('dragover',e=>{e.preventDefault();$('welcome').classList.add('over');});
+window.addEventListener('dragleave',()=>$('welcome').classList.remove('over'));
+window.addEventListener('drop',e=>{e.preventDefault();$('welcome').classList.remove('over');
+  const f=e.dataTransfer.files[0];if(f)loadFile(f);});
+
+$('btnAuto').onclick=()=>{
+  const d=autoYaw();S.yaw=d*Math.PI/180;
+  $('yaw').value=d.toFixed(1);$('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
+  recomputeAligned(false);
+};
+$('yaw').oninput=e=>{
+  const d=parseFloat(e.target.value);S.yaw=d*Math.PI/180;
+  $('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
+  recomputeAligned(false);
+};
+[['xMin','xMax',0],['yMin','yMax',1],['zMin','zMax',2]].forEach(([a,b,ax])=>{
+  const upd=()=>{let p=s2v(ax,+$(a).value),q=s2v(ax,+$(b).value);
+    if(p>q){const t=p;p=q;q=t;}
+    S.crop.min[ax]=p;S.crop.max[ax]=q;clearDetection();refreshStats();};
+  $(a).oninput=upd;$(b).oninput=upd;
+});
+$('btnLayer').onclick=()=>{
+  const{h,lo,hi}=histogram(1,300,false),sm=smooth(h,2);
+  let mx=0;for(const v of sm)mx=Math.max(mx,v);
+  const bin=(hi-lo)/(sm.length-1);
+  const pk=findPeaks(sm,mx*.10,Math.max(1,Math.round(.04/bin)));
+  if(!pk.length){alert('뚜렷한 층을 찾지 못했습니다. 높이 범위를 직접 조정해 주세요.');return;}
+  const ys=pk.map(p=>lo+p*bin);
+  S.crop.min[1]=Math.max(S.bounds.min[1],Math.min(...ys)-.03);
+  S.crop.max[1]=Math.min(S.bounds.max[1],Math.max(...ys)+.03);
+  clearDetection();syncSliders();refreshStats();
+};
+$('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();syncSliders();refreshStats();};
+$('btnColor').onclick=()=>{
+  const modes=S.hasColor?[0,1,2]:[1,2],names={0:'RGB',1:'높이',2:'단색'};
+  S.colorMode=modes[(modes.indexOf(S.colorMode)+1)%modes.length];
+  $('btnColor').textContent='색상 · '+names[S.colorMode];
+};
+$('btnHide').onclick=()=>{S.hideOutside=!S.hideOutside;
+  $('btnHide').textContent='범위 밖 · '+(S.hideOutside?'숨김':'흐리게');};
+$('btnFrame').onclick=()=>{S.exportAligned=!S.exportAligned;
+  $('btnFrame').textContent='좌표 · '+(S.exportAligned?'정렬된 축':'원본');};
+$('btnPs').onclick=()=>{const steps=[1,2,3,4,6];
+  S.pointSize=steps[(steps.indexOf(S.pointSize)+1)%steps.length];
+  $('btnPs').textContent='점 크기 · '+S.pointSize;};
+$('btnExport').onclick=exportPLY;
+$('btnExpModel').onclick=exportModel;
+$('btnExpUsdz').onclick=exportUSDZ;
+$('btnUpUsdz').onclick=uploadUSDZ;
+$('barDia').oninput=e=>{$('diaVal').textContent=e.target.value;};
+$('btnDetect').onclick=onDetect;
+$('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebarTunables',JSON.stringify(TUN));tunToUI();};
+$('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
+  $('btnShowCloud').textContent='점군 · '+(S.showCloud?'표시':'숨김');};
+$('btnShowModel').onclick=()=>{S.showModel=!S.showModel;
+  $('btnShowModel').textContent='모델 · '+(S.showModel?'표시':'숨김');};
+$('btnSites').onclick=srvSites;
+$('btnFetch').onclick=srvFetch;
+document.querySelectorAll('#views button').forEach(b=>b.onclick=()=>{
+  const v=b.dataset.view;
+  if(v==='top'){S.cam.elev=1.5533;S.cam.azim=0;}
+  if(v==='front'){S.cam.elev=0;S.cam.azim=0;}
+  if(v==='side'){S.cam.elev=0;S.cam.azim=Math.PI/2;}
+  if(v==='iso'){S.cam.elev=.45;S.cam.azim=.6;}
+});
+(function(){
+  const cv=$('gl');let drag=false,lx=0,ly=0;
+  cv.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);});
+  cv.addEventListener('pointerup',e=>{drag=false;try{cv.releasePointerCapture(e.pointerId);}catch(_){}});
+  cv.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    S.cam.azim-=(e.clientX-lx)*.006;
+    S.cam.elev=Math.max(-1.5533,Math.min(1.5533,S.cam.elev+(e.clientY-ly)*.006));
+    lx=e.clientX;ly=e.clientY;
+  });
+  cv.addEventListener('wheel',e=>{e.preventDefault();S.cam.dist*=Math.exp(e.deltaY*.0012);},{passive:false});
+})();
+
+initGL();
+S.bounds={min:[-1,-1,-1],max:[1,1,1]};S.crop={min:[-1,-1,-1],max:[1,1,1]};
+$('srvBase').value=SRV.base;
+tunToUI();
+if(location.protocol==='https:')
+  $('srvNote').textContent='주의: 이 페이지가 HTTPS로 열려 있으면 HTTP 서버 연동이 차단됩니다. 파일을 로컬에 저장해 열면 동작합니다.';
+(function loop(){draw();requestAnimationFrame(loop);})();
+</script>
