@@ -1416,7 +1416,7 @@ async function uploadDashboard(){
       signal:AbortSignal.timeout(60000)});
     let j=null;try{j=await resp.json();}catch(_){}
     if(resp.ok){say('업로드 완료 — scan_id '+(j&&j.scan_id||'?')+' · 철근 '+(j&&j.rebar_count||r.rebars.length)+'개. 대시보드 시공 분석 탭에서 확인하세요 (반영에 수십 초 걸릴 수 있음).','ok');return;}
-    if(resp.status===401){say('토큰이 올바르지 않습니다 (401).','bad');return;}
+    if(resp.status===401){say('토큰이 올바르지 않습니다 (401). 잘 쓰던 토큰이면 교체됐을 수 있으니 대시보드팀에 새 토큰을 요청하세요.','bad');return;}
     if(resp.status===400){say('데이터 검증 실패 (400): '+(j&&(j.message+(j.errors?' · '+j.errors.slice(0,3).join(' / '):''))||'').slice(0,200),'bad');return;}
     if(resp.status===502){say('서버 스토리지 오류 (502) — 잠시 후 다시 시도하세요.','bad');return;}
     say('HTTP '+resp.status+': '+((j&&j.message)||'').slice(0,150),'bad');
