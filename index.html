@@ -211,7 +211,8 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>2</b>축 정렬</h2>
-      <button class="btn" id="btnAuto" disabled>격자 방향 자동 정렬</button>
+      <button class="btn" id="btnAuto" disabled>자동 정렬 (수평 + 격자 방향)</button>
+      <label>수평 보정 X·Z축<span class="v" id="tiltVal">0.0° / 0.0°</span></label>
       <label>회전 미세조정 (수직축 기준)<span class="v" id="yawVal">0.0°</span></label>
       <input type="range" id="yaw" min="-90" max="90" step="0.5" value="0" disabled>
       <p class="note">철근이 화면의 가로·세로와 나란해지면 정렬 완료. <b>위에서 보기</b>로 확인하세요.</p>
@@ -322,7 +323,8 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
 <script>
 "use strict";
-const S={n:0,pos:null,col:null,hasColor:false,yaw:0,bounds:null,crop:null,sample:null,kept:0,
+const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1,0,0,0,1],
+  bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
   cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
@@ -408,14 +410,29 @@ function parsePLY(buffer){
   return{n:vc,pos,col,hasColor};
 }
 
-/* ---------- math ---------- */
-const rotY=(x,z,a)=>{const c=Math.cos(a),s=Math.sin(a);return[x*c+z*s,-x*s+z*c];};
+/* ---------- math ----------
+   Alignment = Ry(yaw) · Rz(tiltZ) · Rx(tiltX), kept as a row-major 3x3 in
+   S.A. tiltX/tiltZ level the slab (gravity alignment from ARKit is close
+   but slabs have drainage slopes and long scans drift); yaw squares the
+   rebar grid with the axes. All hot loops use S.A directly. */
+function updateAlign(){
+  const cy=Math.cos(S.yaw),sy=Math.sin(S.yaw);
+  const cx=Math.cos(S.tiltX),sx=Math.sin(S.tiltX);
+  const cz=Math.cos(S.tiltZ),sz=Math.sin(S.tiltZ);
+  const l00=cz,l01=-sz*cx,l02=sz*sx,
+        l10=sz,l11=cz*cx, l12=-cz*sx,
+        l20=0, l21=sx,    l22=cx;
+  S.A=[cy*l00+sy*l20, cy*l01+sy*l21, cy*l02+sy*l22,
+       l10,           l11,           l12,
+       -sy*l00+cy*l20,-sy*l01+cy*l21,-sy*l02+cy*l22];
+}
 function buildSample(n,cap){const st=Math.max(1,Math.ceil(n/cap)),o=[];for(let i=0;i<n;i+=st)o.push(i);return Int32Array.from(o);}
 function alignedBounds(){
-  const{pos,sample,yaw}=S;
+  const{pos,sample}=S,A=S.A;
   let a=Infinity,b=Infinity,c=Infinity,d=-Infinity,e=-Infinity,f=-Infinity;
   for(let k=0;k<sample.length;k++){
-    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),y=pos[i+1];
+    const i=sample[k]*3,px=pos[i],py=pos[i+1],pz=pos[i+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x<a)a=x;if(x>d)d=x;if(y<b)b=y;if(y>e)e=y;if(z<c)c=z;if(z>f)f=z;
   }
   return{min:[a,b,c],max:[d,e,f]};
@@ -429,11 +446,39 @@ function peakiness(v,bin){
   let s=0;for(let i=0;i<n;i++)s+=h[i]*h[i];
   return s/v.length;
 }
+/* Level search: tilt about X/Z (±3°) that makes the Y histogram sharpest —
+   flat layers collapse into thin peaks exactly when the slab is level. */
+function autoLevel(){
+  const sub=buildSample(S.n,40000),ys=new Float32Array(sub.length),pos=S.pos;
+  const score=(rx,rz)=>{
+    const cx=Math.cos(rx),sx=Math.sin(rx),cz=Math.cos(rz),sz=Math.sin(rz);
+    const a=sz,b=cz*cx,c=-cz*sx;
+    for(let k=0;k<sub.length;k++){const i=sub[k]*3;ys[k]=a*pos[i]+b*pos[i+1]+c*pos[i+2];}
+    return peakiness(ys,.004);
+  };
+  const R=3*Math.PI/180,C=R/5;
+  let bx=0,bz=0,best=score(0,0);
+  for(let rx=-R;rx<=R+1e-9;rx+=C)for(let rz=-R;rz<=R+1e-9;rz+=C){
+    const v=score(rx,rz);if(v>best){best=v;bx=rx;bz=rz;}
+  }
+  for(let rx=bx-C;rx<=bx+C+1e-9;rx+=C/4)for(let rz=bz-C;rz<=bz+C+1e-9;rz+=C/4){
+    const v=score(rx,rz);if(v>best){best=v;bx=rx;bz=rz;}
+  }
+  return{rx:bx,rz:bz};
+}
 function autoYaw(){
+  // yaw is searched on LEVELED coordinates so tilt can't skew the grid angle
   const sub=buildSample(S.n,40000),ax=new Float32Array(sub.length),az=new Float32Array(sub.length);
+  const lx=new Float32Array(sub.length),lz=new Float32Array(sub.length);
+  const cx=Math.cos(S.tiltX),sx=Math.sin(S.tiltX),cz=Math.cos(S.tiltZ),sz=Math.sin(S.tiltZ);
+  for(let k=0;k<sub.length;k++){
+    const i=sub[k]*3,px=S.pos[i],py=S.pos[i+1],pz=S.pos[i+2];
+    lx[k]=cz*px-sz*cx*py+sz*sx*pz;
+    lz[k]=sx*py+cx*pz;
+  }
   const score=deg=>{
     const r=deg*Math.PI/180,c=Math.cos(r),s=Math.sin(r);
-    for(let k=0;k<sub.length;k++){const i=sub[k]*3,x=S.pos[i],z=S.pos[i+2];ax[k]=x*c+z*s;az[k]=-x*s+z*c;}
+    for(let k=0;k<sub.length;k++){const x=lx[k],z=lz[k];ax[k]=x*c+z*s;az[k]=-x*s+z*c;}
     return peakiness(ax,.008)+peakiness(az,.008);
   };
   let best=-1,bd=0;
@@ -460,11 +505,12 @@ function findPeaks(h,mp,md){
   return kept.sort((a,b)=>a-b);
 }
 function histogram(axis,nb,respect){
-  const{pos,sample,yaw,crop}=S,b=S.bounds,lo=b.min[axis],hi=b.max[axis];
+  const{pos,sample,crop}=S,A=S.A,b=S.bounds,lo=b.min[axis],hi=b.max[axis];
   const h=new Float32Array(nb); if(!(hi>lo))return{h,lo,hi};
-  const sc=(nb-1)/(hi-lo);
+  const sc=(nb-1)/(hi-lo),q=[0,0,0];
   for(let k=0;k<sample.length;k++){
-    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),q=[x,pos[i+1],z];
+    const i=sample[k]*3,px=pos[i],py=pos[i+1],pz=pos[i+2];
+    q[0]=A[0]*px+A[1]*py+A[2]*pz;q[1]=A[3]*px+A[4]*py+A[5]*pz;q[2]=A[6]*px+A[7]*py+A[8]*pz;
     if(respect){let ok=true;
       for(let a=0;a<3;a++){if(a===axis)continue;if(q[a]<crop.min[a]||q[a]>crop.max[a]){ok=false;break;}}
       if(!ok)continue;}
@@ -473,9 +519,10 @@ function histogram(axis,nb,respect){
   return{h,lo,hi};
 }
 function countKept(){
-  const{pos,sample,yaw,crop}=S;let c=0;
+  const{pos,sample,crop}=S,A=S.A;let c=0;
   for(let k=0;k<sample.length;k++){
-    const i=sample[k]*3,[x,z]=rotY(pos[i],pos[i+2],yaw),y=pos[i+1];
+    const i=sample[k]*3,px=pos[i],py=pos[i+1],pz=pos[i+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x>=crop.min[0]&&x<=crop.max[0]&&y>=crop.min[1]&&y<=crop.max[1]&&z>=crop.min[2]&&z<=crop.max[2])c++;
   }
   return Math.round(c*(S.n/sample.length));
@@ -513,12 +560,12 @@ function tunFromUI(){
    the collection is strided; the voxel pass normalizes density anyway. */
 const DETECT_CAP=8_000_000;
 function collectCroppedAligned(){
-  const{pos,n,yaw,crop}=S,c=Math.cos(yaw),s=Math.sin(yaw);
+  const{pos,n,crop}=S,A=S.A;
   const ax=crop.min[0],bx=crop.max[0],ay=crop.min[1],by=crop.max[1],az=crop.min[2],bz=crop.max[2];
   let m=0;
   for(let i=0;i<n;i++){
-    const j=i*3,x0=pos[j],y=pos[j+1],z0=pos[j+2];
-    const x=x0*c+z0*s,z=-x0*s+z0*c;
+    const j=i*3,px=pos[j],py=pos[j+1],pz=pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x<ax||x>bx||y<ay||y>by||z<az||z>bz)continue;
     m++;
   }
@@ -526,8 +573,8 @@ function collectCroppedAligned(){
   const out=new Float32Array(Math.ceil(m/st)*3);
   let w=0,k=0;
   for(let i=0;i<n;i++){
-    const j=i*3,x0=pos[j],y=pos[j+1],z0=pos[j+2];
-    const x=x0*c+z0*s,z=-x0*s+z0*c;
+    const j=i*3,px=pos[j],py=pos[j+1],pz=pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x<ax||x>bx||y<ay||y>by||z<az||z>bz)continue;
     if(k%st===0){out[w]=x;out[w+1]=y;out[w+2]=z;w+=3;}
     k++;
@@ -711,12 +758,11 @@ function barColor(layer,acrossAxis,layerCount){
 /* ---------- WebGL ---------- */
 let gl,prog,bufPos,bufCol,bufOvPos,bufOvCol,ovCount=0,loc={};
 const VS=`attribute vec3 aPos;attribute vec3 aCol;
-uniform mat4 uMVP;uniform float uYaw,uPointSize,uYMin,uYRange;
+uniform mat4 uMVP;uniform mat3 uAlign;uniform float uPointSize,uYMin,uYRange;
 uniform vec3 uCropMin,uCropMax;uniform int uColorMode,uHideOutside;
 varying vec3 vCol;varying float vDim;
 void main(){
-  float c=cos(uYaw),s=sin(uYaw);
-  vec3 q=vec3(aPos.x*c+aPos.z*s,aPos.y,-aPos.x*s+aPos.z*c);
+  vec3 q=uAlign*aPos;
   bool ins=all(greaterThanEqual(q,uCropMin))&&all(lessThanEqual(q,uCropMax));
   if(!ins&&uHideOutside==1){gl_Position=vec4(2.0,2.0,2.0,1.0);gl_PointSize=0.0;return;}
   vDim=ins?1.0:0.16;
@@ -743,7 +789,7 @@ function initGL(){
   gl.attachShader(prog,mk(gl.VERTEX_SHADER,VS));
   gl.attachShader(prog,mk(gl.FRAGMENT_SHADER,FS));
   gl.linkProgram(prog);gl.useProgram(prog);
-  for(const u of['uMVP','uYaw','uPointSize','uCropMin','uCropMax','uColorMode','uHideOutside','uYMin','uYRange'])
+  for(const u of['uMVP','uAlign','uPointSize','uCropMin','uCropMax','uColorMode','uHideOutside','uYMin','uYRange'])
     loc[u]=gl.getUniformLocation(prog,u);
   loc.aPos=gl.getAttribLocation(prog,'aPos');loc.aCol=gl.getAttribLocation(prog,'aCol');
   bufPos=gl.createBuffer();bufCol=gl.createBuffer();
@@ -820,7 +866,9 @@ function draw(){
   gl.useProgram(prog);
   gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
   if(S.showCloud){
-    gl.uniform1f(loc.uYaw,S.yaw);gl.uniform1f(loc.uPointSize,S.pointSize*dpr);
+    const A=S.A; // row-major -> GL column-major
+    gl.uniformMatrix3fv(loc.uAlign,false,new Float32Array([A[0],A[3],A[6],A[1],A[4],A[7],A[2],A[5],A[8]]));
+    gl.uniform1f(loc.uPointSize,S.pointSize*dpr);
     gl.uniform3fv(loc.uCropMin,new Float32Array(S.crop.min));
     gl.uniform3fv(loc.uCropMax,new Float32Array(S.crop.max));
     gl.uniform1i(loc.uColorMode,S.colorMode);gl.uniform1i(loc.uHideOutside,S.hideOutside?1:0);
@@ -832,8 +880,9 @@ function draw(){
     gl.drawArrays(gl.POINTS,0,S.renderN||S.n);
   }
   if(S.showModel&&ovCount>0){
-    // overlay is already in the aligned frame — no yaw, no crop, RGB colors
-    gl.uniform1f(loc.uYaw,0);gl.uniform1f(loc.uPointSize,Math.max(6,(S.pointSize+4)*dpr));
+    // overlay is already in the aligned frame — identity align, no crop, RGB colors
+    gl.uniformMatrix3fv(loc.uAlign,false,new Float32Array([1,0,0,0,1,0,0,0,1]));
+    gl.uniform1f(loc.uPointSize,Math.max(6,(S.pointSize+4)*dpr));
     gl.uniform3fv(loc.uCropMin,new Float32Array([-1e9,-1e9,-1e9]));
     gl.uniform3fv(loc.uCropMax,new Float32Array([1e9,1e9,1e9]));
     gl.uniform1i(loc.uColorMode,0);gl.uniform1i(loc.uHideOutside,0);
@@ -950,7 +999,9 @@ const enableUI=on=>['btnAuto','yaw','yMin','yMax','xMin','xMax','zMin','zMax','b
 
 function adopt(parsed){
   S.n=parsed.n;S.pos=parsed.pos;S.col=parsed.col;S.hasColor=parsed.hasColor;
-  S.yaw=0;$('yaw').value=0;$('yawVal').textContent='0.0°';$('hudYaw').textContent='0.0°';
+  S.yaw=0;S.tiltX=0;S.tiltZ=0;updateAlign();
+  $('yaw').value=0;$('yawVal').textContent='0.0°';$('hudYaw').textContent='0.0°';
+  $('tiltVal').textContent='0.0° / 0.0°';
   S.sample=buildSample(S.n,300000);
   S.colorMode=parsed.hasColor?0:1;
   $('btnColor').textContent='색상 · '+(S.colorMode===0?'RGB':'높이');
@@ -1083,12 +1134,17 @@ function onDetect(){
   const btn=$('btnDetect');btn.disabled=true;btn.textContent='검출 중…';
   setTimeout(()=>{
     try{
-      // If the grid was never aligned, do it automatically first (stage-2 equivalent).
-      if(S.yaw===0){
+      // If never aligned, do the full stage-2 alignment first (level + yaw).
+      if(S.yaw===0&&S.tiltX===0&&S.tiltZ===0){
+        const t=autoLevel();S.tiltX=t.rx;S.tiltZ=t.rz;updateAlign();
         const d=autoYaw();
-        if(Math.abs(d)>0.9){
-          S.yaw=d*Math.PI/180;
-          $('yaw').value=d.toFixed(1);$('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
+        let changed=Math.abs(t.rx)>1e-4||Math.abs(t.rz)>1e-4;
+        if(Math.abs(d)>0.9){S.yaw=d*Math.PI/180;updateAlign();changed=true;}
+        if(changed){
+          $('yaw').value=(S.yaw*180/Math.PI).toFixed(1);
+          $('yawVal').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
+          $('hudYaw').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
+          $('tiltVal').textContent=(t.rx*180/Math.PI).toFixed(1)+'° / '+(t.rz*180/Math.PI).toFixed(1)+'°';
           recomputeAligned(true);
         }
       }
@@ -1115,6 +1171,8 @@ function detectionPayload(r){
     detectedAt:stamp(),
     frame:'aligned',
     gridAngleDeg:+(S.yaw*180/Math.PI).toFixed(3),
+    tiltXDeg:+(S.tiltX*180/Math.PI).toFixed(3),
+    tiltZDeg:+(S.tiltZ*180/Math.PI).toFixed(3),
     layerYs:r.layerYs,
     inputPoints:r.inputPoints,
     usedPoints:r.usedPoints,
@@ -1135,7 +1193,8 @@ function exportModel(){
   const r=S.det; if(!r)return;
   const lc=r.layerYs.length,st=stamp();
   let obj='# Detected rebar centerlines (meters, aligned frame; yaw_deg='
-    +(S.yaw*180/Math.PI).toFixed(3)+')\n';
+    +(S.yaw*180/Math.PI).toFixed(3)+' tilt_x_deg='+(S.tiltX*180/Math.PI).toFixed(3)
+    +' tilt_z_deg='+(S.tiltZ*180/Math.PI).toFixed(3)+')\n';
   let vi=1;
   for(const b of r.rebars){
     obj+=`o ${layerName(b.layer,lc)}_${b.acrossAxis===0?'V':'H'}_${(vi>>1)+1}\n`;
@@ -1255,7 +1314,7 @@ function buildUSDZ(r,radiusM){
     defaultPrim = "RebarModel"
     metersPerUnit = 1
     upAxis = "Y"
-    doc = "As-built rebar model detected from LiDAR scan (aligned frame, yaw_deg=${(S.yaw*180/Math.PI).toFixed(3)})"
+    doc = "As-built rebar model detected from LiDAR scan (aligned frame, yaw_deg=${(S.yaw*180/Math.PI).toFixed(3)}, tilt_x_deg=${(S.tiltX*180/Math.PI).toFixed(3)}, tilt_z_deg=${(S.tiltZ*180/Math.PI).toFixed(3)})"
 )
 
 def Xform "RebarModel" {
@@ -1300,28 +1359,33 @@ async function uploadUSDZ(){
   say('서버에 USDZ 업로드 API가 아직 없습니다 (백엔드에 요청한 상태 — api/WEBAPP_BACKEND_REQUEST.md 요청 3). 그동안은 "USDZ 저장"으로 파일을 받아 전달하세요.','bad');
 }
 function exportPLY(){
-  const{pos,col,yaw,crop,n,hasColor}=S;
-  const c=Math.cos(yaw),s=Math.sin(yaw);
+  const{pos,col,crop,n,hasColor}=S,A=S.A;
   const ax=crop.min[0],bx=crop.max[0],ay=crop.min[1],by=crop.max[1],az=crop.min[2],bz=crop.max[2];
   let m=0;
   for(let i=0;i<n;i++){
-    const j=i*3,x=pos[j]*c+pos[j+2]*s,y=pos[j+1],z=-pos[j]*s+pos[j+2]*c;
+    const j=i*3,px=pos[j],py=pos[j+1],pz=pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x>=ax&&x<=bx&&y>=ay&&y<=by&&z>=az&&z<=bz)m++;
   }
   if(!m){alert('남은 점이 없습니다. 범위를 넓혀 주세요.');return;}
   const keep=new Uint32Array(m);
   for(let i=0,w=0;i<n;i++){
-    const j=i*3,x=pos[j]*c+pos[j+2]*s,y=pos[j+1],z=-pos[j]*s+pos[j+2]*c;
+    const j=i*3,px=pos[j],py=pos[j+1],pz=pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
     if(x>=ax&&x<=bx&&y>=ay&&y<=by&&z>=az&&z<=bz)keep[w++]=i;
   }
   const header=`ply\nformat binary_little_endian 1.0\ncomment cropped with rebar-analysis web tool\n`+
-    `comment yaw_deg=${(yaw*180/Math.PI).toFixed(3)} frame=${S.exportAligned?'aligned':'original'}\n`+
+    `comment yaw_deg=${(S.yaw*180/Math.PI).toFixed(3)} tilt_x_deg=${(S.tiltX*180/Math.PI).toFixed(3)}`+
+    ` tilt_z_deg=${(S.tiltZ*180/Math.PI).toFixed(3)} frame=${S.exportAligned?'aligned':'original'}\n`+
     `element vertex ${m}\nproperty float x\nproperty float y\nproperty float z\n`+
     `property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n`;
   const body=new ArrayBuffer(m*15),dv=new DataView(body);
   for(let k=0;k<m;k++){
     const i=keep[k],j=i*3;let X,Y,Z;
-    if(S.exportAligned){const r=rotY(pos[j],pos[j+2],yaw);X=r[0];Y=pos[j+1];Z=r[1];}
+    if(S.exportAligned){
+      const px=pos[j],py=pos[j+1],pz=pos[j+2];
+      X=A[0]*px+A[1]*py+A[2]*pz;Y=A[3]*px+A[4]*py+A[5]*pz;Z=A[6]*px+A[7]*py+A[8]*pz;
+    }
     else{X=pos[j];Y=pos[j+1];Z=pos[j+2];}
     const o=k*15;
     dv.setFloat32(o,X,true);dv.setFloat32(o+4,Y,true);dv.setFloat32(o+8,Z,true);
@@ -1346,12 +1410,14 @@ window.addEventListener('drop',e=>{e.preventDefault();$('welcome').classList.rem
   const f=e.dataTransfer.files[0];if(f)loadFile(f);});
 
 $('btnAuto').onclick=()=>{
-  const d=autoYaw();S.yaw=d*Math.PI/180;
+  const t=autoLevel();S.tiltX=t.rx;S.tiltZ=t.rz;updateAlign();
+  const d=autoYaw();S.yaw=d*Math.PI/180;updateAlign();
   $('yaw').value=d.toFixed(1);$('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
+  $('tiltVal').textContent=(t.rx*180/Math.PI).toFixed(1)+'° / '+(t.rz*180/Math.PI).toFixed(1)+'°';
   recomputeAligned(false);
 };
 $('yaw').oninput=e=>{
-  const d=parseFloat(e.target.value);S.yaw=d*Math.PI/180;
+  const d=parseFloat(e.target.value);S.yaw=d*Math.PI/180;updateAlign();
   $('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
   recomputeAligned(false);
 };
