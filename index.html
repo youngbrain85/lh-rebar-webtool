@@ -277,6 +277,21 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <button class="btn key" id="btnExpUsdz" disabled>USDZ 저장 (LHRebarAR 앱용)</button>
       <button class="btn" id="btnUpUsdz" disabled>USDZ 서버 업로드</button>
       <div class="srv-status" id="upStatus"></div>
+      <details class="sub" id="dashBox">
+        <summary>사무실 대시보드 업로드 (시공 분석)</summary>
+        <div class="inner">
+          <label>현장 site_id</label>
+          <input type="text" id="dashSite" placeholder="예: 5" spellcheck="false">
+          <label>촬영 시각</label>
+          <input type="text" id="dashTime" placeholder="YYYY-MM-DDTHH:MM" spellcheck="false">
+          <label>업로드 토큰 (이 브라우저에만 저장)</label>
+          <input type="password" id="dashToken" placeholder="SCAN_UPLOAD_TOKEN" spellcheck="false">
+          <button class="btn key" id="btnDashUp" disabled>대시보드 업로드</button>
+          <div class="srv-status" id="dashStatus"></div>
+          <p class="note">검출된 철근을 가닥별 중심선 JSON(정렬 좌표·미터)으로
+            시공 분석 서버에 올립니다. 정합은 대시보드가 수행합니다.</p>
+        </div>
+      </details>
       <button class="btn" id="btnExport" disabled>크롭된 PLY 저장</button>
       <div class="pair" style="margin-top:7px">
         <button class="btn" id="btnFrame">좌표 · 정렬된 축</button>
@@ -974,6 +989,7 @@ function clearDetection(){
   $('btnExpModel').disabled=true;
   $('btnExpUsdz').disabled=true;
   $('btnUpUsdz').disabled=true;
+  $('btnDashUp').disabled=true;
   $('legend').classList.remove('show');
   $('hudDetRow').style.display='none';
 }
@@ -1124,6 +1140,7 @@ function showDetection(res){
   $('btnExpModel').disabled=false;
   $('btnExpUsdz').disabled=false;
   $('btnUpUsdz').disabled=false;
+  $('btnDashUp').disabled=false;
   $('legend').classList.toggle('show',true);
   $('legendMid').style.display=lc>=3?'':'none';
   $('hudDetRow').style.display='';
@@ -1358,6 +1375,55 @@ async function uploadUSDZ(){
   }
   say('서버에 USDZ 업로드 API가 아직 없습니다 (백엔드에 요청한 상태 — api/WEBAPP_BACKEND_REQUEST.md 요청 3). 그동안은 "USDZ 저장"으로 파일을 받아 전달하세요.','bad');
 }
+
+/* ==================================================================
+   Office dashboard upload (시공 분석) — per-bar centerline JSON.
+   Contract: POST /api/scan-upload (multipart site_id/captured_at/
+   rebars.json, Bearer token). Coordinates: ALIGNED frame per team
+   decision (the dashboard does registration itself). Unit: meters.
+   ================================================================== */
+const DASH_BASE='https://office-dashboard-xi.vercel.app';
+function dashRebarsJSON(r){
+  const dia=Math.min(Math.max(parseFloat($('barDia').value)||16,6),51);
+  const radius=+(dia/2000).toFixed(4);           // 0.003..0.0255 — within (0,0.1)
+  const lc=r.layerYs.length,counts={};
+  const rebars=r.rebars.map(b=>{
+    const mk=matKey(b.layer,b.acrossAxis,lc);
+    counts[mk]=(counts[mk]||0)+1;
+    const f=v=>+v.toFixed(4);
+    return{id:mk+'_'+String(counts[mk]).padStart(2,'0'),
+      centerline:[b.start.map(f),b.end.map(f)],radius};
+  });
+  return JSON.stringify({version:1,unit:'m',rebars});
+}
+async function uploadDashboard(){
+  const r=S.det;if(!r)return;
+  const st=$('dashStatus');
+  const say=(m,c)=>{st.textContent=m;st.className='srv-status '+(c||'');};
+  const site=$('dashSite').value.trim(),when=$('dashTime').value.trim(),tok=$('dashToken').value.trim();
+  if(!/^\d+$/.test(site)){say('site_id는 숫자여야 합니다 (예: 5).','bad');return;}
+  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(when)){say('촬영 시각은 YYYY-MM-DDTHH:MM 형식이어야 합니다.','bad');return;}
+  if(!tok){say('업로드 토큰을 입력하세요 (대시보드팀에서 전달받은 SCAN_UPLOAD_TOKEN).','bad');return;}
+  localStorage.setItem('dashUploadToken',tok);
+  const fd=new FormData();
+  fd.append('site_id',site);
+  fd.append('captured_at',when);
+  fd.append('rebars',new Blob([dashRebarsJSON(r)],{type:'application/json'}),'rebars.json');
+  say('업로드 중… ('+r.rebars.length+'개 철근)','busy');
+  try{
+    const resp=await fetch(DASH_BASE+'/api/scan-upload',{
+      method:'POST',headers:{'Authorization':'Bearer '+tok},body:fd,
+      signal:AbortSignal.timeout(60000)});
+    let j=null;try{j=await resp.json();}catch(_){}
+    if(resp.ok){say('업로드 완료 — scan_id '+(j&&j.scan_id||'?')+' · 철근 '+(j&&j.rebar_count||r.rebars.length)+'개. 대시보드 시공 분석 탭에서 확인하세요 (반영에 수십 초 걸릴 수 있음).','ok');return;}
+    if(resp.status===401){say('토큰이 올바르지 않습니다 (401).','bad');return;}
+    if(resp.status===400){say('데이터 검증 실패 (400): '+(j&&(j.message+(j.errors?' · '+j.errors.slice(0,3).join(' / '):''))||'').slice(0,200),'bad');return;}
+    if(resp.status===502){say('서버 스토리지 오류 (502) — 잠시 후 다시 시도하세요.','bad');return;}
+    say('HTTP '+resp.status+': '+((j&&j.message)||'').slice(0,150),'bad');
+  }catch(e){
+    say('요청 실패 — 대시보드 서버의 CORS 허용이 필요할 수 있습니다 (브라우저 콘솔 확인). '+String(e).slice(0,80),'bad');
+  }
+}
 function exportPLY(){
   const{pos,col,crop,n,hasColor}=S,A=S.A;
   const ax=crop.min[0],bx=crop.max[0],ay=crop.min[1],by=crop.max[1],az=crop.min[2],bz=crop.max[2];
@@ -1455,7 +1521,13 @@ $('btnExport').onclick=exportPLY;
 $('btnExpModel').onclick=exportModel;
 $('btnExpUsdz').onclick=exportUSDZ;
 $('btnUpUsdz').onclick=uploadUSDZ;
+$('btnDashUp').onclick=uploadDashboard;
 $('barDia').oninput=e=>{$('diaVal').textContent=e.target.value;};
+// dashboard panel defaults: token persisted locally, time = now, site follows server picker
+$('dashToken').value=localStorage.getItem('dashUploadToken')||'';
+{const d=new Date(),p=v=>String(v).padStart(2,'0');
+ $('dashTime').value=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());}
+$('srvSite').addEventListener('change',e=>{if(e.target.value)$('dashSite').value=e.target.value;});
 $('btnDetect').onclick=onDetect;
 $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebarTunables',JSON.stringify(TUN));tunToUI();};
 $('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
