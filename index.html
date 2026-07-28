@@ -356,18 +356,38 @@ function parsePLY(buffer){
   const hasColor=('red'in ix)&&('green'in ix)&&('blue'in ix);
   const pos=new Float32Array(vc*3), col=new Uint8Array(vc*3);
   if(format==='ascii'){
-    const txt=new TextDecoder('ascii').decode(bytes.subarray(bodyStart));
-    const L=txt.length; let p=0,c=0; const v=new Array(props.length);
+    // Parse numbers straight from the bytes — no decoded string, no substrings.
+    // Real scans are 100s of MB of ASCII; parseFloat(slice) costs 2x memory
+    // (UTF-16 copy) and tens of millions of short-lived strings.
+    const nP=props.length,v=new Float64Array(nP),L=bytes.length;
+    const iX=ix.x,iY=ix.y,iZ=ix.z,iR=ix.red,iG=ix.green,iB=ix.blue;
+    let p=bodyStart,c=0;
     while(c<vc&&p<L){
       let f=0;
-      while(f<props.length&&p<L){
-        while(p<L&&txt.charCodeAt(p)<=32)p++;
-        const s=p; while(p<L&&txt.charCodeAt(p)>32)p++;
-        if(p>s)v[f++]=parseFloat(txt.slice(s,p));
+      while(f<nP&&p<L){
+        while(p<L&&bytes[p]<=32)p++;
+        if(p>=L)break;
+        let ch=bytes[p],neg=false;
+        if(ch===45){neg=true;p++;}else if(ch===43)p++;
+        let val=0;
+        while(p<L){ch=bytes[p];if(ch<48||ch>57)break;val=val*10+(ch-48);p++;}
+        if(p<L&&bytes[p]===46){
+          p++;let frac=0,fd=1;
+          while(p<L){ch=bytes[p];if(ch<48||ch>57)break;frac=frac*10+(ch-48);fd*=10;p++;}
+          val+=frac/fd;
+        }
+        if(p<L&&(bytes[p]===101||bytes[p]===69)){
+          p++;let eneg=false;ch=bytes[p];
+          if(ch===45){eneg=true;p++;}else if(ch===43)p++;
+          let ex=0;while(p<L){ch=bytes[p];if(ch<48||ch>57)break;ex=ex*10+(ch-48);p++;}
+          val*=Math.pow(10,eneg?-ex:ex);
+        }
+        while(p<L&&bytes[p]>32)p++; // skip any trailing token garbage (also guards nan/inf)
+        v[f++]=neg?-val:val;
       }
-      if(f<props.length)break;
-      pos[c*3]=v[ix.x];pos[c*3+1]=v[ix.y];pos[c*3+2]=v[ix.z];
-      if(hasColor){col[c*3]=v[ix.red];col[c*3+1]=v[ix.green];col[c*3+2]=v[ix.blue];}
+      if(f<nP)break;
+      pos[c*3]=v[iX];pos[c*3+1]=v[iY];pos[c*3+2]=v[iZ];
+      if(hasColor){col[c*3]=v[iR];col[c*3+1]=v[iG];col[c*3+2]=v[iB];}
       c++;
     }
     if(c<vc) throw new Error('점 데이터가 헤더 개수보다 적습니다');
@@ -487,20 +507,37 @@ function tunFromUI(){
   localStorage.setItem('rebarTunables',JSON.stringify(TUN));
 }
 
-/* cropped points in the aligned frame, as a flat Float32-ish array */
+/* cropped points in the aligned frame, as a flat Float32Array.
+   Two passes (count, then fill a preallocated buffer) — a push-array at
+   10M+ points costs hundreds of MB of transient heap. Above DETECT_CAP
+   the collection is strided; the voxel pass normalizes density anyway. */
+const DETECT_CAP=8_000_000;
 function collectCroppedAligned(){
-  const{pos,n,yaw,crop}=S,c=Math.cos(yaw),s=Math.sin(yaw),out=[];
+  const{pos,n,yaw,crop}=S,c=Math.cos(yaw),s=Math.sin(yaw);
+  const ax=crop.min[0],bx=crop.max[0],ay=crop.min[1],by=crop.max[1],az=crop.min[2],bz=crop.max[2];
+  let m=0;
   for(let i=0;i<n;i++){
     const j=i*3,x0=pos[j],y=pos[j+1],z0=pos[j+2];
     const x=x0*c+z0*s,z=-x0*s+z0*c;
-    if(x<crop.min[0]||x>crop.max[0]||y<crop.min[1]||y>crop.max[1]||z<crop.min[2]||z>crop.max[2])continue;
-    out.push(x,y,z);
+    if(x<ax||x>bx||y<ay||y>by||z<az||z>bz)continue;
+    m++;
   }
-  return out;
+  const st=Math.max(1,Math.ceil(m/DETECT_CAP));
+  const out=new Float32Array(Math.ceil(m/st)*3);
+  let w=0,k=0;
+  for(let i=0;i<n;i++){
+    const j=i*3,x0=pos[j],y=pos[j+1],z0=pos[j+2];
+    const x=x0*c+z0*s,z=-x0*s+z0*c;
+    if(x<ax||x>bx||y<ay||y>by||z<az||z>bz)continue;
+    if(k%st===0){out[w]=x;out[w+1]=y;out[w+2]=z;w+=3;}
+    k++;
+  }
+  return w===out.length?out:out.subarray(0,w);
 }
 /* 4mm voxel downsample — uniformizes dwell-time density bias */
 function voxelDown(flat){
-  const inv=1/DET.voxel,seen=new Map(),out=[];
+  const inv=1/DET.voxel,seen=new Map();
+  const out=new Float32Array(flat.length);let w=0;
   for(let i=0;i<flat.length;i+=3){
     const x=flat[i],y=flat[i+1],z=flat[i+2];
     if(!isFinite(x)||!isFinite(y)||!isFinite(z))continue;
@@ -508,9 +545,9 @@ function voxelDown(flat){
     if(xi<0||xi>2097151||yi<0||yi>2097151||zi<0||zi>2097151)continue;
     const k=xi*2097152+zi;
     let ys=seen.get(k); if(!ys){ys=new Set();seen.set(k,ys);}
-    if(!ys.has(yi)){ys.add(yi);out.push(x,y,z);}
+    if(!ys.has(yi)){ys.add(yi);out[w]=x;out[w+1]=y;out[w+2]=z;w+=3;}
   }
-  return out;
+  return w===out.length?out:out.subarray(0,w);
 }
 function findLayerYs(flat){
   let mn=Infinity,mx=-Infinity;
@@ -713,10 +750,28 @@ function initGL(){
   bufOvPos=gl.createBuffer();bufOvCol=gl.createBuffer();
   gl.enable(gl.DEPTH_TEST);gl.clearColor(0,0,0,0); // transparent — CSS drafting grid shows through
 }
+/* Display subsample: huge scans (10M+ pts) would be drawn in full every
+   frame otherwise. Analysis/export always use the full-resolution arrays. */
+const RENDER_CAP=4_000_000;
 function uploadCloud(){
-  gl.bindBuffer(gl.ARRAY_BUFFER,bufPos);gl.bufferData(gl.ARRAY_BUFFER,S.pos,gl.STATIC_DRAW);
-  const c=new Float32Array(S.n*3);for(let i=0;i<S.n*3;i++)c[i]=S.col[i]/255;
-  gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.bufferData(gl.ARRAY_BUFFER,c,gl.STATIC_DRAW);
+  const st=Math.max(1,Math.ceil(S.n/RENDER_CAP));
+  S.renderStride=st;
+  if(st===1){
+    S.renderN=S.n;
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufPos);gl.bufferData(gl.ARRAY_BUFFER,S.pos,gl.STATIC_DRAW);
+    const c=new Float32Array(S.n*3);for(let i=0;i<S.n*3;i++)c[i]=S.col[i]/255;
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.bufferData(gl.ARRAY_BUFFER,c,gl.STATIC_DRAW);
+  }else{
+    const m=Math.ceil(S.n/st);S.renderN=m;
+    const p2=new Float32Array(m*3),c2=new Float32Array(m*3);
+    for(let k=0,i=0;k<m;k++,i+=st){
+      const j=i*3,q=k*3;
+      p2[q]=S.pos[j];p2[q+1]=S.pos[j+1];p2[q+2]=S.pos[j+2];
+      c2[q]=S.col[j]/255;c2[q+1]=S.col[j+1]/255;c2[q+2]=S.col[j+2]/255;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufPos);gl.bufferData(gl.ARRAY_BUFFER,p2,gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.bufferData(gl.ARRAY_BUFFER,c2,gl.STATIC_DRAW);
+  }
 }
 /* dense highlight dots along each detected centerline (aligned frame) */
 function uploadOverlay(){
@@ -774,7 +829,7 @@ function draw(){
     gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
     gl.bindBuffer(gl.ARRAY_BUFFER,bufCol);gl.enableVertexAttribArray(loc.aCol);
     gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.POINTS,0,S.n);
+    gl.drawArrays(gl.POINTS,0,S.renderN||S.n);
   }
   if(S.showModel&&ovCount>0){
     // overlay is already in the aligned frame — no yaw, no crop, RGB colors
@@ -901,15 +956,19 @@ function adopt(parsed){
   $('btnColor').textContent='색상 · '+(S.colorMode===0?'RGB':'높이');
   uploadCloud();recomputeAligned(false);
   const b=S.bounds;
-  $('statCount').textContent=S.n.toLocaleString();
+  $('statCount').textContent=S.n.toLocaleString()+
+    (S.renderStride>1?` (표시 ${S.renderN.toLocaleString()})`:'');
   $('statColor').textContent=parsed.hasColor?'RGB 있음':'없음';
   $('statSize').textContent=`${(b.max[0]-b.min[0]).toFixed(2)}·${(b.max[1]-b.min[1]).toFixed(2)}·${(b.max[2]-b.min[2]).toFixed(2)} m`;
   $('welcome').classList.add('gone');
   enableUI(true);
 }
 async function loadFile(f){
+  const st=$('statCount'),old=st.textContent;
+  st.textContent='읽는 중… ('+(f.size/1048576).toFixed(0)+' MB)';
+  await new Promise(r=>setTimeout(r,30));   // let the busy text paint first
   try{ adopt(parsePLY(await f.arrayBuffer())); }
-  catch(e){ alert('PLY를 읽지 못했습니다: '+e.message); }
+  catch(e){ st.textContent=old; alert('PLY를 읽지 못했습니다: '+e.message); }
 }
 function loadSample(){
   const pts=[];let sd=7;
@@ -1241,13 +1300,20 @@ async function uploadUSDZ(){
   say('서버에 USDZ 업로드 API가 아직 없습니다 (백엔드에 요청한 상태 — api/WEBAPP_BACKEND_REQUEST.md 요청 3). 그동안은 "USDZ 저장"으로 파일을 받아 전달하세요.','bad');
 }
 function exportPLY(){
-  const{pos,col,yaw,crop,n,hasColor}=S,keep=[];
+  const{pos,col,yaw,crop,n,hasColor}=S;
+  const c=Math.cos(yaw),s=Math.sin(yaw);
+  const ax=crop.min[0],bx=crop.max[0],ay=crop.min[1],by=crop.max[1],az=crop.min[2],bz=crop.max[2];
+  let m=0;
   for(let i=0;i<n;i++){
-    const j=i*3,[x,z]=rotY(pos[j],pos[j+2],yaw),y=pos[j+1];
-    if(x>=crop.min[0]&&x<=crop.max[0]&&y>=crop.min[1]&&y<=crop.max[1]&&z>=crop.min[2]&&z<=crop.max[2])keep.push(i);
+    const j=i*3,x=pos[j]*c+pos[j+2]*s,y=pos[j+1],z=-pos[j]*s+pos[j+2]*c;
+    if(x>=ax&&x<=bx&&y>=ay&&y<=by&&z>=az&&z<=bz)m++;
   }
-  if(!keep.length){alert('남은 점이 없습니다. 범위를 넓혀 주세요.');return;}
-  const m=keep.length;
+  if(!m){alert('남은 점이 없습니다. 범위를 넓혀 주세요.');return;}
+  const keep=new Uint32Array(m);
+  for(let i=0,w=0;i<n;i++){
+    const j=i*3,x=pos[j]*c+pos[j+2]*s,y=pos[j+1],z=-pos[j]*s+pos[j+2]*c;
+    if(x>=ax&&x<=bx&&y>=ay&&y<=by&&z>=az&&z<=bz)keep[w++]=i;
+  }
   const header=`ply\nformat binary_little_endian 1.0\ncomment cropped with rebar-analysis web tool\n`+
     `comment yaw_deg=${(yaw*180/Math.PI).toFixed(3)} frame=${S.exportAligned?'aligned':'original'}\n`+
     `element vertex ${m}\nproperty float x\nproperty float y\nproperty float z\n`+
