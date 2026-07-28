@@ -519,15 +519,29 @@ function findLayerYs(flat){
   const n=Math.max(8,Math.min(4096,Math.floor((mx-mn)/DET.layerBin)+1));
   const h=new Float32Array(n),sc=(n-1)/(mx-mn);
   for(let i=1;i<flat.length;i+=3)h[((flat[i]-mn)*sc)|0]+=1;
-  const sm=smooth(h,DET.sigma);let maxV=0;for(const v of sm)maxV=Math.max(maxV,v);
+  // Zero-pad both ends: cropping typically trims right at a layer, leaving its
+  // mass on the first/last bins where an interior-only peak scan never fires.
+  const pad=Math.max(3,Math.round(DET.sigma*3));
+  const hp=new Float32Array(n+2*pad);hp.set(h,pad);
+  const sm=smooth(hp,DET.sigma);let maxV=0;for(const v of sm)maxV=Math.max(maxV,v);
   if(maxV<=0)return[];
   const md=Math.max(1,Math.round(DET.layerMinSep/DET.layerBin));
   let pk=findPeaks(sm,maxV*.10,md);
   pk.sort((a,b)=>sm[b]-sm[a]);pk=pk.slice(0,DET.maxLayers).sort((a,b)=>a-b);
   const bw=(mx-mn)/(n-1);
-  return pk.map(p=>mn+p*bw);
+  let ys=pk.map(p=>{const y=mn+(p-pad)*bw;return Math.min(mx,Math.max(mn,y));});
+  ys=[...new Set(ys.map(y=>+y.toFixed(4)))];
+  // Fallback: the crop already isolated a single layer — take the densest bin.
+  if(!ys.length){
+    let bi=0;for(let i=0;i<n;i++)if(h[i]>h[bi])bi=i;
+    ys=[mn+bi*bw];
+  }
+  return ys;
 }
-/* Filter ① metric: max/median contrast of the smoothed in-slab histogram */
+/* Filter ① metric: p97/median contrast of the smoothed in-slab histogram.
+   p97 instead of max: a real grid has MANY tall bins (bars every 150-300mm),
+   while a single wall/column crossing the slab is one spike (~1% of bins)
+   that must not make a flat deck look "gridded". */
 function gridContrast(slab,axisIdx){
   const co=[];for(let i=0;i<slab.length;i+=3)co.push(slab[i+axisIdx]);
   let mn=Infinity,mx=-Infinity;for(const v of co){if(v<mn)mn=v;if(v>mx)mx=v;}
@@ -539,7 +553,7 @@ function gridContrast(slab,axisIdx){
   const nz=Array.from(sm).filter(v=>v>0).sort((a,b)=>a-b);
   if(nz.length<=4)return 0;
   const med=nz[nz.length>>1];
-  return med>0?nz[nz.length-1]/med:0;
+  return med>0?nz[Math.floor((nz.length-1)*.97)]/med:0;
 }
 /* Filter ② check: shoulder-bin occupancy above/below the slab in the strip */
 function isVerticalSurface(all,layerY,acrossIdx,pos,runLo,runHi){
