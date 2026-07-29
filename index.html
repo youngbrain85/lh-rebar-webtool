@@ -550,8 +550,15 @@ function findPeaks(h,mp,md){
   for(const p of st)if(kept.every(q=>Math.abs(q-p)>=md))kept.push(p);
   return kept.sort((a,b)=>a-b);
 }
-function histogram(axis,nb,respect){
-  const{pos,sample,crop}=S,A=S.A,b=S.bounds,lo=b.min[axis],hi=b.max[axis];
+/* Density along one aligned axis.
+   respect   — exclude points cropped away on the OTHER two axes
+   cropRange — measure over the crop interval of THIS axis (full canvas
+               resolution on the region actually analysed) instead of the
+               whole cloud. The Y (layer) chart keeps the full range so the
+               selection band stays visible while it is dragged. */
+function histogram(axis,nb,respect,cropRange){
+  const{pos,sample,crop}=S,A=S.A,b=S.bounds;
+  const lo=cropRange?crop.min[axis]:b.min[axis],hi=cropRange?crop.max[axis]:b.max[axis];
   const h=new Float32Array(nb); if(!(hi>lo))return{h,lo,hi};
   const sc=(nb-1)/(hi-lo),q=[0,0,0];
   for(let k=0;k<sample.length;k++){
@@ -560,6 +567,7 @@ function histogram(axis,nb,respect){
     if(respect){let ok=true;
       for(let a=0;a<3;a++){if(a===axis)continue;if(q[a]<crop.min[a]||q[a]>crop.max[a]){ok=false;break;}}
       if(!ok)continue;}
+    if(cropRange&&(q[axis]<lo||q[axis]>hi))continue;
     h[((q[axis]-lo)*sc)|0]+=1;
   }
   return{h,lo,hi};
@@ -987,7 +995,9 @@ function syncSliders(){
     $(a).value=v2s(ax,S.crop.min[ax]);$(b).value=v2s(ax,S.crop.max[ax]);});
 }
 function analysePeaks(axis){
-  const d=histogram(axis,260,true),sm=smooth(d.h,2);
+  // judge separation on the cropped region only — the verdict must describe
+  // the data that will actually be detected
+  const d=histogram(axis,260,true,true),sm=smooth(d.h,2);
   let mx=0;for(const v of sm)mx=Math.max(mx,v);
   if(mx<=0)return{n:0,spacing:null,contrast:0};
   const bin=(d.hi-d.lo)/(sm.length-1);
@@ -1005,9 +1015,11 @@ function refreshStats(){
   $('xRangeVal').textContent=`${fmt(S.crop.min[0])} ~ ${fmt(S.crop.max[0])}`;
   $('yRangeVal').textContent=`${fmt(S.crop.min[1])} ~ ${fmt(S.crop.max[1])}`;
   $('zRangeVal').textContent=`${fmt(S.crop.min[2])} ~ ${fmt(S.crop.max[2])}`;
-  drawHist('histY',histogram(1,220,false),S.crop.min[1],S.crop.max[1],'#1245D8');
-  drawHist('histX',histogram(0,260,true),null,null,'#1245D8');
-  drawHist('histZ',histogram(2,260,true),null,null,'#1245D8');
+  // Y: full range (the band must stay draggable) but only points inside the X/Z crop.
+  // X·Z: measured within their own crop interval — the density of what gets detected.
+  drawHist('histY',histogram(1,220,true,false),S.crop.min[1],S.crop.max[1],'#1245D8');
+  drawHist('histX',histogram(0,260,true,true),null,null,'#1245D8');
+  drawHist('histZ',histogram(2,260,true,true),null,null,'#1245D8');
   const X=analysePeaks(0),Z=analysePeaks(2);
   const total=X.n+Z.n,contrast=Math.max(X.contrast,Z.contrast);
   const chip=$('quality'),meta=$('qualityMeta');
@@ -1620,7 +1632,7 @@ $('yaw').oninput=e=>{
   $(a).oninput=upd;$(b).oninput=upd;
 });
 $('btnLayer').onclick=()=>{
-  const{h,lo,hi}=histogram(1,300,false),sm=smooth(h,2);
+  const{h,lo,hi}=histogram(1,300,true,false),sm=smooth(h,2);
   let mx=0;for(const v of sm)mx=Math.max(mx,v);
   const bin=(hi-lo)/(sm.length-1);
   const pk=findPeaks(sm,mx*.10,Math.max(1,Math.round(.04/bin)));
