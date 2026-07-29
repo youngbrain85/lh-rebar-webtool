@@ -100,6 +100,19 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 .tgrid{display:grid;grid-template-columns:1fr 78px;gap:6px 8px;align-items:center;margin-top:8px}
 .tgrid span{font:500 10.5px/1.35 var(--sans);color:var(--ink-dim)}
 
+/* hover-explained thresholds — tooltip is position:fixed so the scrolling
+   rail cannot clip it */
+.info{display:inline-grid;place-items:center;width:13px;height:13px;border-radius:50%;
+  border:1px solid var(--line-2);color:var(--ink-faint);font:700 9px/1 var(--sans);
+  cursor:help;margin-left:5px;vertical-align:1px;user-select:none}
+.info:hover{border-color:var(--accent);color:var(--accent);background:rgba(18,69,216,.06)}
+#tip-pop{position:fixed;z-index:50;max-width:280px;padding:9px 11px;border-radius:var(--r);
+  background:var(--navy);color:#E7EEFB;font:400 11px/1.6 var(--sans);
+  box-shadow:0 8px 26px rgba(15,25,45,.3);white-space:pre-line;pointer-events:none;
+  opacity:0;visibility:hidden;transition:opacity .12s}
+#tip-pop.on{opacity:1;visibility:visible}
+#tip-pop b{color:#fff;font-weight:650}
+
 .result{margin-top:9px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);
   background:var(--panel-2);font:11.5px/1.8 var(--mono);font-variant-numeric:tabular-nums;display:none}
 .result.show{display:block}
@@ -221,7 +234,10 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>3</b>크로핑</h2>
-      <label>높이 — 철근 층 선택<span class="v" id="yRangeVal">—</span></label>
+      <label>높이 — 철근 층 선택<i class="info" data-tip="**높이(중력축) 방향 밀도**입니다. 철근 매트는 얇은 층이라 뾰족한 봉우리로 나타납니다.
+주황색 띠가 지금 선택된 높이 구간이고, ● 표시는 자동으로 찾은 층 후보입니다.
+
+이 그래프만 전체 높이 범위를 유지합니다 — 띠를 끌어 옮기려면 바깥이 보여야 하기 때문입니다.">i</i><span class="v" id="yRangeVal">—</span></label>
       <div class="hist-wrap"><canvas class="hist" id="histY"></canvas></div>
       <input type="range" id="yMin" min="0" max="1000" value="0" disabled>
       <input type="range" id="yMax" min="0" max="1000" value="1000" disabled>
@@ -238,9 +254,16 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
         <span class="chip idle" id="quality">대기</span>
         <span class="m" id="qualityMeta">—</span>
       </div>
-      <label>가로 방향 밀도</label>
+      <label>가로 방향 밀도<i class="info" data-tip="**정렬된 가로축을 따라 점이 얼마나 몰려 있는지**를 보여줍니다.
+크로핑한 구간 안에서만 다시 계산되므로, 슬라이더를 움직이면 그래프도 함께 다시 그려집니다.
+
+● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).
+검출과 같은 기준(감도 %·최소 간격)을 쓰므로 미리보기로 볼 수 있습니다.">i</i><span class="v" id="xPeaks">—</span></label>
       <div class="hist-wrap"><canvas class="hist" id="histX"></canvas></div>
-      <label>깊이 방향 밀도</label>
+      <label>깊이 방향 밀도<i class="info" data-tip="**정렬된 깊이축을 따라 본 밀도**입니다.
+가로 방향과 직각인 배근(예: 상면 가로근)이 여기서 봉우리로 나타납니다.
+
+● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).">i</i><span class="v" id="zPeaks">—</span></label>
       <div class="hist-wrap"><canvas class="hist" id="histZ"></canvas></div>
       <p class="note">봉우리 하나가 철근 하나입니다. <b>봉우리가 뚜렷하게 분리</b>되면 검출이 잘 됩니다.</p>
     </div>
@@ -252,12 +275,40 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
         <summary>검출 필터 임계값</summary>
         <div class="inner">
           <div class="tgrid">
-            <span>① 층 격자성 최소 (배)</span><input type="number" id="tGrid" step="0.1" min="1" max="10">
-            <span>② 벽 점유율 최대 (0–1)</span><input type="number" id="tWall" step="0.05" min="0.1" max="1">
-            <span>③ 단면 폭 최대 (mm)</span><input type="number" id="tIqr" step="1" min="5" max="40">
-            <span>최소 간격 (mm)</span><input type="number" id="tSpac" step="5" min="20" max="300">
-            <span>최소 길이 (cm)</span><input type="number" id="tLen" step="1" min="5" max="100">
-            <span>감도 % (낮을수록 민감)</span><input type="number" id="tProm" step="1" min="1" max="50">
+            <span>① 층 격자성 최소 (배)<i class="info" data-tip="**층으로 인정할 최소 격자성.**
+높이별로 자른 슬랩의 밀도 히스토그램에서 상위 3%(p97) 봉우리가 중앙값의 몇 배인지 봅니다.
+배근된 층은 봉우리가 규칙적으로 많아 값이 크고(보통 5~12), 밋밋한 바닥·거푸집 데크는 작습니다(1 근처).
+
+낮추면 → 바닥·데크가 철근 층으로 잡힘
+높이면 → 실제 층을 놓침">i</i></span><input type="number" id="tGrid" step="0.1" min="1" max="10">
+            <span>② 벽 점유율 최대 (0–1)<i class="info" data-tip="**슬랩을 관통하는 수직면(벽·기둥·측판) 제거.**
+철근 후보 자리에서 위아래 ±12cm를 훑어, 슬랩 두께(±2.5cm) 바깥 구간이 점으로 얼마나 차 있는지의 비율입니다.
+철근은 슬랩 안에만 있어 값이 작고, 벽은 위아래로 계속 이어져 값이 큽니다.
+
+낮추면 → 벽 제거가 강해지지만 실제 철근도 지워질 수 있음
+높이면 → 벽이 철근으로 잡힘">i</i></span><input type="number" id="tWall" step="0.05" min="0.1" max="1">
+            <span>③ 단면 폭 최대 (mm)<i class="info" data-tip="**뭉툭한 덩어리 제거.**
+후보에 속한 점들을 철근을 가로지르는 방향으로 봤을 때의 사분위 폭(IQR, 25~75%)입니다.
+철근은 좁게 뭉치고, 자재 더미·거푸집 자국 같은 덩어리는 넓게 퍼집니다.
+
+키우면 → 굵거나 번진 후보도 통과(오검출 증가)
+줄이면 → 스캔이 거친 구간의 실제 철근을 놓칠 수 있음">i</i></span><input type="number" id="tIqr" step="1" min="5" max="40">
+            <span>최소 간격 (mm)<i class="info" data-tip="**서로 다른 철근으로 인정할 최소 거리.**
+이보다 가까운 봉우리는 같은 철근으로 보고 하나만 남깁니다(더 높은 쪽).
+실제 배근 간격(보통 150~300mm)보다 충분히 작게 두세요.
+
+기본 60mm — 밀실 배근이면 더 줄이고, 잡음이 많으면 키웁니다.">i</i></span><input type="number" id="tSpac" step="5" min="20" max="300">
+            <span>최소 길이 (cm)<i class="info" data-tip="**이보다 짧은 후보는 버립니다.**
+길이는 후보에 속한 점들의 2~98 퍼센타일 구간으로 재므로 끝단 잡음에 흔들리지 않습니다.
+
+키우면 → 짧은 조각·잡음 제거
+줄이면 → 가장자리에서 일부만 스캔된 철근도 인정">i</i></span><input type="number" id="tLen" step="1" min="5" max="100">
+            <span>감도 % (낮을수록 민감)<i class="info" data-tip="**봉우리로 인정할 최소 돌출 높이** (그 층 최대 높이 대비 %).
+밀도 곡선에서 좌우 골짜기보다 이만큼 솟아야 철근으로 셉니다.
+아래 밀도 그래프의 ● 표시가 바로 이 기준으로 찍힌 봉우리입니다 — 값을 바꾸면 표시도 함께 바뀝니다.
+
+낮추면 → 약한 봉우리도 검출(개수↑, 오검출↑)
+높이면 → 뚜렷한 것만 검출(누락↑)">i</i></span><input type="number" id="tProm" step="1" min="1" max="50">
           </div>
           <button class="btn ghost" id="btnTunDefault">기본값 복원</button>
         </div>
@@ -957,14 +1008,17 @@ function draw(){
   }
 }
 /* ---------- histogram render ---------- */
-function drawHist(id,data,lo2,hi2,stroke){
+/* peak: {promPct, minSepM} — markers are found on the SAME smoothed curve that
+   is drawn, with the detector's own thresholds, so the chart previews what
+   detection will pick up. Returns the peak count. */
+function drawHist(id,data,lo2,hi2,stroke,peak){
   const cv=$(id),dpr=Math.min(devicePixelRatio||1,2);
   cv.width=cv.clientWidth*dpr;cv.height=cv.clientHeight*dpr;
   const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
-  if(!data)return;
+  if(!data)return 0;
   const{h,lo,hi}=data,sm=smooth(h,1.5);
   let mx=0;for(let i=0;i<sm.length;i++)mx=Math.max(mx,sm[i]);
-  if(mx<=0)return;
+  if(mx<=0)return 0;
   if(lo2!=null&&hi>lo){
     const a=(lo2-lo)/(hi-lo)*cv.width,b=(hi2-lo)/(hi-lo)*cv.width;
     ctx.fillStyle='rgba(226,160,50,.18)';ctx.fillRect(a,0,b-a,cv.height);
@@ -984,6 +1038,22 @@ function drawHist(id,data,lo2,hi2,stroke){
     i?ctx.lineTo(x,y):ctx.moveTo(x,y);
   }
   ctx.strokeStyle=stroke;ctx.lineWidth=1.5*dpr;ctx.stroke();
+  if(!peak)return 0;
+  // ---- peak markers (same criteria the detector uses) ----
+  const bin=(hi-lo)/(sm.length-1);
+  const md=Math.max(1,Math.round(peak.minSepM/bin));
+  const pk=findPeaks(sm,mx*peak.promPct/100,md);
+  const yOf=i=>cv.height-(sm[i]/mx)*(cv.height-5)-2.5;
+  ctx.strokeStyle='rgba(20,129,75,.30)';ctx.lineWidth=1*dpr;
+  ctx.beginPath();
+  for(const p of pk){const x=p/(sm.length-1)*cv.width;ctx.moveTo(x,yOf(p));ctx.lineTo(x,cv.height);}
+  ctx.stroke();
+  ctx.fillStyle='#14814B';
+  for(const p of pk){
+    const x=p/(sm.length-1)*cv.width;
+    ctx.beginPath();ctx.arc(x,yOf(p),2.3*dpr,0,6.2832);ctx.fill();
+  }
+  return pk.length;
 }
 
 /* ---------- UI ---------- */
@@ -996,12 +1066,15 @@ function syncSliders(){
 }
 function analysePeaks(axis){
   // judge separation on the cropped region only — the verdict must describe
-  // the data that will actually be detected
-  const d=histogram(axis,260,true,true),sm=smooth(d.h,2);
+  // the data that will actually be detected. Smoothing and thresholds match
+  // drawHist exactly so the verdict count equals the markers on the chart.
+  const d=histogram(axis,260,true,true),sm=smooth(d.h,1.5);
   let mx=0;for(const v of sm)mx=Math.max(mx,v);
   if(mx<=0)return{n:0,spacing:null,contrast:0};
   const bin=(d.hi-d.lo)/(sm.length-1);
-  const pk=findPeaks(sm,mx*.08,Math.max(1,Math.round(.06/bin)));
+  const nv=(id,dv)=>{const v=parseFloat($(id).value);return isFinite(v)&&v>0?v:dv;};
+  const pk=findPeaks(sm,mx*nv('tProm',TUN.prominencePct)/100,
+    Math.max(1,Math.round(nv('tSpac',TUN.minSpacingMm)/1000/bin)));
   const nz=Array.from(sm).filter(v=>v>0).sort((a,b)=>a-b);
   const med=nz.length?nz[nz.length>>1]:0;
   let sp=null;
@@ -1017,9 +1090,15 @@ function refreshStats(){
   $('zRangeVal').textContent=`${fmt(S.crop.min[2])} ~ ${fmt(S.crop.max[2])}`;
   // Y: full range (the band must stay draggable) but only points inside the X/Z crop.
   // X·Z: measured within their own crop interval — the density of what gets detected.
-  drawHist('histY',histogram(1,220,true,false),S.crop.min[1],S.crop.max[1],'#1245D8');
-  drawHist('histX',histogram(0,260,true,true),null,null,'#1245D8');
-  drawHist('histZ',histogram(2,260,true,true),null,null,'#1245D8');
+  // markers follow the threshold boxes live (read only — no persist on redraw)
+  const numOr=(id,dv)=>{const v=parseFloat($(id).value);return isFinite(v)&&v>0?v:dv;};
+  const barPk={promPct:numOr('tProm',TUN.prominencePct),minSepM:numOr('tSpac',TUN.minSpacingMm)/1000};
+  drawHist('histY',histogram(1,220,true,false),S.crop.min[1],S.crop.max[1],'#1245D8',
+    {promPct:10,minSepM:DET.layerMinSep});   // layer candidates, as findLayerYs uses
+  const nx=drawHist('histX',histogram(0,260,true,true),null,null,'#1245D8',barPk);
+  const nz=drawHist('histZ',histogram(2,260,true,true),null,null,'#1245D8',barPk);
+  $('xPeaks').textContent=nx?nx+'개':'—';
+  $('zPeaks').textContent=nz?nz+'개':'—';
   const X=analysePeaks(0),Z=analysePeaks(2);
   const total=X.n+Z.n,contrast=Math.max(X.contrast,Z.contrast);
   const chip=$('quality'),meta=$('qualityMeta');
@@ -1668,7 +1747,38 @@ $('dashToken').value=localStorage.getItem('dashUploadToken')||'';
 $('srvSite').addEventListener('change',e=>{if(e.target.value)$('dashSite').value=e.target.value;srvScans();});
 $('srvScan').addEventListener('change',e=>{if(e.target.value)$('srvFile').value=e.target.value;});
 $('btnDetect').onclick=onDetect;
-$('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebarTunables',JSON.stringify(TUN));tunToUI();};
+$('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebarTunables',JSON.stringify(TUN));tunToUI();
+  if(S.n)refreshStats();};
+// live preview: peak markers follow the 감도/최소 간격 boxes as they are typed
+['tProm','tSpac'].forEach(id=>$(id).addEventListener('input',()=>{if(S.n)refreshStats();}));
+
+/* ---- info tooltips (fixed-position so the scrolling rail can't clip them) ---- */
+(function(){
+  const pop=document.createElement('div');pop.id='tip-pop';document.body.appendChild(pop);
+  let cur=null;
+  const show=el=>{
+    cur=el;
+    pop.innerHTML=el.dataset.tip.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+    pop.classList.add('on');
+    const r=el.getBoundingClientRect(),p=pop.getBoundingClientRect();
+    let x=r.left+r.width/2-p.width/2;
+    x=Math.max(8,Math.min(x,innerWidth-p.width-8));
+    let y=r.top-p.height-8;
+    if(y<8)y=r.bottom+8;                        // flip below when there's no room
+    pop.style.left=x+'px';pop.style.top=y+'px';
+  };
+  const hide=el=>{if(cur===el){pop.classList.remove('on');cur=null;}};
+  document.querySelectorAll('.info').forEach(el=>{
+    el.setAttribute('role','img');
+    el.setAttribute('aria-label',el.dataset.tip.replace(/\*\*/g,''));
+    el.addEventListener('mouseenter',()=>show(el));
+    el.addEventListener('mouseleave',()=>hide(el));
+    el.addEventListener('focus',()=>show(el));
+    el.addEventListener('blur',()=>hide(el));
+    el.tabIndex=0;
+  });
+})();
 $('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
   $('btnShowCloud').textContent='점군 · '+(S.showCloud?'표시':'숨김');};
 $('btnShowModel').onclick=()=>{S.showModel=!S.showModel;
