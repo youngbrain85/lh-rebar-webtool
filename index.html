@@ -229,6 +229,16 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>2</b>축 정렬</h2>
+      <label>구조물 형태<i class="info" data-tip="**배근면이 어느 방향으로 겹쳐 있는지**가 달라서, 검출 로직의 축 역할이 바뀝니다.
+
+· **수평 슬랩** — 배근면이 높이(Y)로 나뉨(상면·하면). 철근은 가로(X)·깊이(Z)로 뻗습니다.
+· **수직 벽·옹벽** — 배근면이 두께(Z)로 나뉨(외측·내측). 철근은 가로(X)·세로(Y)로 뻗고, 깊이 방향 철근은 없습니다.
+
+자동 정렬도 이 설정에 맞춰 최적화 축을 바꿉니다.">i</i></label>
+      <select id="structMode">
+        <option value="slab">수평 슬랩 (바닥·지반)</option>
+        <option value="wall">수직 벽 · 옹벽</option>
+      </select>
       <button class="btn" id="btnAuto" disabled>자동 정렬 (수평 + 격자 방향)</button>
       <label>수평 보정 X·Z축<span class="v" id="tiltVal">0.0° / 0.0°</span></label>
       <button class="btn ghost" id="btnAxes" disabled>축 화살표 · 표시</button>
@@ -281,11 +291,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 · 깊이(Z) 방향 = 파란 화살표를 따라 누운 철근 → 가로(X) 방향 밀도의 봉우리로 찾습니다
 
 한 방향만 필요하면 나머지를 끄면 오검출이 줄어듭니다.">i</i></label>
-      <select id="detDirs">
-        <option value="both">양방향 (가로 + 깊이)</option>
-        <option value="x">가로(X) 방향 철근만</option>
-        <option value="z">깊이(Z) 방향 철근만</option>
-      </select>
+      <select id="detDirs"></select>
       <button class="btn key" id="btnDetect" disabled>철근 검출 실행</button>
       <details class="sub">
         <summary>검출 필터 임계값</summary>
@@ -391,11 +397,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <span><i style="background:#1245D8"></i>깊이 Z</span>
     </div>
     <div id="tip">드래그 회전 · 휠 확대</div>
-    <div id="legend">
-      <div><i style="background:#FF3333"></i>상면 깊이Z <i style="background:#C2610A;margin-left:8px"></i>상면 가로X</div>
-      <div><i style="background:#3366FF"></i>하면 깊이Z <i style="background:#008B8B;margin-left:8px"></i>하면 가로X</div>
-      <div id="legendMid" style="display:none"><i style="background:#9933FF"></i>중간층 깊이Z <i style="background:#148A42;margin-left:8px"></i>중간층 가로X</div>
-    </div>
+    <div id="legend"></div>
 
     <div id="welcome">
       <div class="wrap">
@@ -414,7 +416,8 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1,0,0,0,1],
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
-  dirs:[0,2],   // which across-axes to detect: 0 = bars running along Z(깊이), 2 = along X(가로)
+  mode:'slab',  // 'slab' (layered along Y) | 'wall' (layered along Z, thickness)
+  dirs:[0,2],   // across-axes to detect; reset when the mode changes
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
   cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
 const $=id=>document.getElementById(id);
@@ -568,10 +571,14 @@ function peakiness(v,bin){
 /* Level search: tilt about X/Z (±3°) that makes the Y histogram sharpest —
    flat layers collapse into thin peaks exactly when the slab is level. */
 function autoLevel(){
+  // The objective is a sharp density peak along the LAYERING axis: height for a
+  // slab, thickness for a wall. Rows of Rz(tz)Rx(tx): y = [sz, cz·cx, -cz·sx],
+  // z = [0, sx, cx].
+  const nrm=NRM();
   const sub=buildSample(S.n,40000),ys=new Float32Array(sub.length),pos=S.pos;
   const score=(rx,rz)=>{
     const cx=Math.cos(rx),sx=Math.sin(rx),cz=Math.cos(rz),sz=Math.sin(rz);
-    const a=sz,b=cz*cx,c=-cz*sx;
+    const a=nrm===1?sz:0,b=nrm===1?cz*cx:sx,c=nrm===1?-cz*sx:cx;
     for(let k=0;k<sub.length;k++){const i=sub[k]*3;ys[k]=a*pos[i]+b*pos[i+1]+c*pos[i+2];}
     return peakiness(ys,.004);
   };
@@ -595,15 +602,20 @@ function autoYaw(){
     lx[k]=cz*px-sz*cx*py+sz*sx*pz;
     lz[k]=sx*py+cx*pz;
   }
+  // Slab: both horizontal axes should become grid-aligned, so score both.
+  // Wall: yaw must turn the wall face-on, i.e. make its thickness (Z) sharp —
+  // scoring X too would fight that, since the wall spans X broadly.
+  const wall=S.mode==='wall';
   const score=deg=>{
     const r=deg*Math.PI/180,c=Math.cos(r),s=Math.sin(r);
     for(let k=0;k<sub.length;k++){const x=lx[k],z=lz[k];ax[k]=x*c+z*s;az[k]=-x*s+z*c;}
-    return peakiness(ax,.008)+peakiness(az,.008);
+    return wall?peakiness(az,.004):peakiness(ax,.008)+peakiness(az,.008);
   };
+  const SPAN=wall?180:90;   // a wall's face-on angle is unique mod 180
   let best=-1,bd=0;
-  for(let d=0;d<90;d+=2){const v=score(d);if(v>best){best=v;bd=d;}}
-  for(let d=bd-2;d<=bd+2;d+=.5){const dd=(d+90)%90,v=score(dd);if(v>best){best=v;bd=dd;}}
-  return bd>45?bd-90:bd;
+  for(let d=0;d<SPAN;d+=2){const v=score(d);if(v>best){best=v;bd=d;}}
+  for(let d=bd-2;d<=bd+2;d+=.5){const dd=(d+SPAN)%SPAN,v=score(dd);if(v>best){best=v;bd=dd;}}
+  return bd>SPAN/2?bd-SPAN:bd;
 }
 function smooth(h,sig){
   const r=Math.max(1,Math.round(sig*3)),k=new Float32Array(2*r+1);let s=0;
@@ -732,13 +744,27 @@ function voxelDown(flat){
   }
   return w===out.length?out:out.subarray(0,w);
 }
-function findLayerYs(flat){
+/* Axis roles depend on the structure. A horizontal slab is layered along the
+   gravity axis Y and its bars run in the two horizontal directions; a vertical
+   wall is layered along its thickness Z (outer/inner mat) and its bars run
+   horizontally (along X) and vertically (along Y). NRM() is the layering
+   (normal) axis, the other two are the in-plane axes. */
+const NRM=()=>S.mode==='wall'?2:1;
+const inPlane=()=>S.mode==='wall'?[0,1]:[0,2];
+const runAxis=(nrm,across)=>3-nrm-across;   // 0+1+2 = 3
+/* Korean name for the direction a bar runs along */
+function dirName(across){
+  const r=runAxis(NRM(),across);
+  return r===0?'가로X':r===1?'세로Y':'깊이Z';
+}
+function findLayerYs(flat,nrm){
+  nrm=nrm===undefined?NRM():nrm;
   let mn=Infinity,mx=-Infinity;
-  for(let i=1;i<flat.length;i+=3){const y=flat[i];if(y<mn)mn=y;if(y>mx)mx=y;}
+  for(let i=nrm;i<flat.length;i+=3){const y=flat[i];if(y<mn)mn=y;if(y>mx)mx=y;}
   if(!(mx-mn>0.01))return flat.length?[(mn+mx)/2]:[];
   const n=Math.max(8,Math.min(4096,Math.floor((mx-mn)/DET.layerBin)+1));
   const h=new Float32Array(n),sc=(n-1)/(mx-mn);
-  for(let i=1;i<flat.length;i+=3)h[((flat[i]-mn)*sc)|0]+=1;
+  for(let i=nrm;i<flat.length;i+=3)h[((flat[i]-mn)*sc)|0]+=1;
   // Zero-pad both ends: cropping typically trims right at a layer, leaving its
   // mass on the first/last bins where an interior-only peak scan never fires.
   const pad=Math.max(3,Math.round(DET.sigma*3));
@@ -775,16 +801,19 @@ function gridContrast(slab,axisIdx){
   const med=nz[nz.length>>1];
   return med>0?nz[Math.floor((nz.length-1)*.97)]/med:0;
 }
-/* Filter ② check: shoulder-bin occupancy above/below the slab in the strip */
-function isVerticalSurface(all,layerY,acrossIdx,pos,runLo,runHi){
+/* Filter ② check: does the surface keep going along the NORMAL axis, well past
+   the mat? A bar is confined to the mat; a wall crossing a slab (or a slab
+   crossing a wall scan) continues far beyond it. */
+function isVerticalSurface(all,layerY,acrossIdx,pos,runLo,runHi,nrm){
+  nrm=nrm===undefined?NRM():nrm;
   const binH=.01,nBins=Math.round(2*DET.wallProbe/binH),counts=new Int32Array(nBins);
-  const runIdx=acrossIdx===0?2:0;
+  const runIdx=runAxis(nrm,acrossIdx);
   for(let i=0;i<all.length;i+=3){
     const across=all[i+acrossIdx];
     if(Math.abs(across-pos)>DET.barWinHalf)continue;
     const run=all[i+runIdx];
     if(run<runLo||run>runHi)continue;
-    const dy=all[i+1]-layerY;
+    const dy=all[i+nrm]-layerY;
     if(Math.abs(dy)>=DET.wallProbe)continue;
     const b=((dy+DET.wallProbe)/binH)|0;
     if(b>=0&&b<nBins)counts[b]++;
@@ -800,9 +829,13 @@ function isVerticalSurface(all,layerY,acrossIdx,pos,runLo,runHi){
   if(!shoulderBins||shoulderPts<20)return false;
   return occupied/shoulderBins>TUN.wallOccupancyMax;
 }
-/* bars in one layer, one direction. acrossIdx: 0 (bars at fixed X, run along Z) or 2 */
-function findBars(slab,all,layerY,acrossIdx){
-  const runIdx=acrossIdx===0?2:0;
+/* Bars in one mat, one direction. acrossIdx is the axis the bars are spaced
+   along (peaks in that axis' density); they run along the remaining in-plane
+   axis. Slab: across X → runs along Z. Wall: across X → runs along Y (세로근),
+   across Y → runs along X (가로근). */
+function findBars(slab,all,layerY,acrossIdx,nrm){
+  nrm=nrm===undefined?NRM():nrm;
+  const runIdx=runAxis(nrm,acrossIdx);
   const co=[];for(let i=0;i<slab.length;i+=3)co.push(slab[i+acrossIdx]);
   let mn=Infinity,mx=-Infinity;for(const v of co){if(v<mn)mn=v;if(v>mx)mx=v;}
   if(!(mx-mn>0.05))return[];
@@ -832,12 +865,13 @@ function findBars(slab,all,layerY,acrossIdx){
     const iqr=acr[Math.floor((acr.length-1)*.75)]-acr[Math.floor((acr.length-1)*.25)];
     if(iqr*1000>TUN.maxAcrossIQRMm){REJ.wide++;REJ.minIqrMm=Math.min(REJ.minIqrMm,iqr*1000);continue;}
     // Filter ②: walls continue far above/below the slab; a rebar doesn't
-    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi)){REJ.wall++;continue;}
-    let sa=0,sy=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sy+=cluster[i+1];}
-    const meanA=sa/cn,meanY=sy/cn;
-    const a=[0,meanY,0],b=[0,meanY,0];
-    if(acrossIdx===0){a[0]=meanA;b[0]=meanA;a[2]=lo;b[2]=hi;}
-    else{a[2]=meanA;b[2]=meanA;a[0]=lo;b[0]=hi;}
+    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi,nrm)){REJ.wall++;continue;}
+    let sa=0,sn=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sn+=cluster[i+nrm];}
+    const meanA=sa/cn,meanN=sn/cn;
+    const a=[0,0,0],b=[0,0,0];
+    a[acrossIdx]=b[acrossIdx]=meanA;      // spacing axis: fixed
+    a[nrm]=b[nrm]=meanN;                  // normal axis: the mat's depth/height
+    a[runIdx]=lo;b[runIdx]=hi;            // run axis: the bar's extent
     bars.push({positionAcross:meanA,start:a,end:b,pointCount:cn});
   }
   return bars;
@@ -863,22 +897,24 @@ function runDetection(){
   const pts=voxelDown(flat);
   const usedPoints=pts.length/3;
   if(usedPoints<2000)return{err:'유효한 점이 부족합니다.'};
-  const layerYs=findLayerYs(pts);
-  if(!layerYs.length)return{err:'철근 층을 찾지 못했습니다. 세로(높이) 방향 밀도에 뚜렷한 봉우리가 없습니다 — 높이 범위를 철근 매트 부근으로 좁혀 보세요.'};
+  const nrm=NRM(),ipl=inPlane();
+  const nrmName=nrm===1?'세로(높이 Y)':'깊이(Z)';
+  const layerYs=findLayerYs(pts,nrm);
+  if(!layerYs.length)return{err:`철근 배근면을 찾지 못했습니다. ${nrmName} 방향 밀도에 뚜렷한 봉우리가 없습니다 — 그 범위를 배근면 부근으로 좁혀 보세요.`};
   const rebars=[],groups=[],accepted=[];
   for(const layerY of layerYs){
     const slab=[];
     for(let i=0;i<pts.length;i+=3)
-      if(Math.abs(pts[i+1]-layerY)<=DET.slabHalf)slab.push(pts[i],pts[i+1],pts[i+2]);
+      if(Math.abs(pts[i+nrm]-layerY)<=DET.slabHalf)slab.push(pts[i],pts[i+1],pts[i+2]);
     if(slab.length/3<500){REJ.thinSlab++;continue;}
-    // Filter ①: uniform surfaces (floor/deck) have no grid contrast
-    const contrast=Math.max(gridContrast(slab,0),gridContrast(slab,2));
+    // Filter ①: uniform surfaces (floor/deck/formwork) have no grid contrast
+    const contrast=Math.max(gridContrast(slab,ipl[0]),gridContrast(slab,ipl[1]));
     REJ.bestGrid=Math.max(REJ.bestGrid,contrast);
     if(contrast<TUN.gridnessMin){REJ.lowGrid++;continue;}
     accepted.push(layerY);
     const layerIdx=accepted.length-1;
-    for(const acrossIdx of S.dirs){
-      const found=findBars(slab,pts,layerY,acrossIdx);
+    for(const acrossIdx of S.dirs.filter(a=>ipl.includes(a))){
+      const found=findBars(slab,pts,layerY,acrossIdx,nrm);
       if(!found.length)continue;
       const positions=found.map(b=>b.positionAcross).sort((a,b)=>a-b);
       if(positions.length>=2){
@@ -909,7 +945,25 @@ function runDetection(){
   }
   return{rebars,groups,layerYs:accepted,inputPoints,usedPoints};
 }
-const layerName=(l,total)=>total<=1?'단일층':(l===0?'하면':(l===total-1?'상면':'중간층'));
+const layerName=(l,total)=>S.mode==='wall'
+  ? (total<=1?'배근면':'배근면'+(l+1))
+  : (total<=1?'단일층':(l===0?'하면':(l===total-1?'상면':'중간층')));
+/* Direction dropdown depends on the mode: a wall has no depth-direction bar. */
+function syncDirOptions(){
+  const sel=$('detDirs'),ipl=inPlane(),prev=sel.value;
+  const label=a=>dirName(a)+' 방향 철근만';
+  sel.innerHTML='';
+  const add=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;sel.appendChild(o);};
+  add('both',`양방향 (${dirName(ipl[0])} + ${dirName(ipl[1])})`);
+  add('a0',label(ipl[0]));
+  add('a1',label(ipl[1]));
+  sel.value=[...sel.options].some(o=>o.value===prev)?prev:'both';
+  applyDirs();
+}
+function applyDirs(){
+  const v=$('detDirs').value,ipl=inPlane();
+  S.dirs=v==='a0'?[ipl[0]]:v==='a1'?[ipl[1]]:[...ipl];
+}
 /* Palette tuned for the white drafting sheet — every color >=3:1 vs #FAFBFC
    (WCAG 1.4.11 graphical minimum). Keep in sync with #legend and MAT_DEFS. */
 function barColor(layer,acrossAxis,layerCount){
@@ -1431,7 +1485,7 @@ function showDetection(res){
   let html=`<div class="row"><span>검출 철근</span><span class="hl">${res.rebars.length}개</span></div>`;
   const gs=[...res.groups].sort((a,b)=>(b.layer-a.layer)||(b.acrossAxis-a.acrossAxis));
   for(const g of gs){
-    const dir=g.acrossAxis===0?'깊이Z':'가로X';   // direction the bar runs
+    const dir=dirName(g.acrossAxis);
     const sp=g.count>=2?` · 평균 ${Math.round(g.meanSpacingMm)}mm (${Math.round(g.minSpacingMm)}–${Math.round(g.maxSpacingMm)})`:'';
     html+=`<div class="row"><span>${layerName(g.layer,lc)} ${dir}</span><span>${g.count}개${sp}</span></div>`;
   }
@@ -1441,8 +1495,20 @@ function showDetection(res){
   $('btnExpUsdz').disabled=false;
   $('btnUpUsdz').disabled=false;
   $('btnDashUp').disabled=false;
-  $('legend').classList.toggle('show',true);
-  $('legendMid').style.display=lc>=3?'':'none';
+  // legend built from the layers/directions actually present in this result
+  const hex=c=>'#'+c.map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');
+  const seen=new Map();
+  for(const bar of res.rebars){
+    const k=bar.layer+'|'+bar.acrossAxis;
+    if(!seen.has(k))seen.set(k,`<i style="background:${hex(barColor(bar.layer,bar.acrossAxis,lc))}"></i>`+
+      `${layerName(bar.layer,lc)} ${dirName(bar.acrossAxis)}`);
+  }
+  const items=[...seen.entries()].sort((a,b)=>b[0].localeCompare(a[0])).map(e=>e[1]);
+  let lh='';
+  for(let i=0;i<items.length;i+=2)
+    lh+='<div>'+items.slice(i,i+2).map((t,j)=>j?t.replace('<i style="','<i style="margin-left:8px;'):t).join(' ')+'</div>';
+  $('legend').innerHTML=lh;
+  $('legend').classList.toggle('show',items.length>0);
   $('hudDetRow').style.display='';
   $('hudDet').textContent=res.rebars.length;
 }
@@ -1489,6 +1555,8 @@ function detectionPayload(r){
   return{
     detectedAt:stamp(),
     frame:'aligned',
+    structure:S.mode,   // 'slab' | 'wall'
+    layerAxis:'XYZ'[NRM()],
     gridAngleDeg:+(S.yaw*180/Math.PI).toFixed(3),
     tiltXDeg:+(S.tiltX*180/Math.PI).toFixed(3),
     tiltZDeg:+(S.tiltZ*180/Math.PI).toFixed(3),
@@ -1498,13 +1566,13 @@ function detectionPayload(r){
     tunables:{...TUN},
     groups:r.groups.map(g=>({
       layer:layerName(g.layer,lc),direction:g.acrossAxis===0?'V':'H',
-      runsAlong:g.acrossAxis===0?'Z':'X',count:g.count,
+      runsAlong:'XYZ'[runAxis(NRM(),g.acrossAxis)],count:g.count,
       meanSpacingMm:+g.meanSpacingMm.toFixed(1),
       minSpacingMm:+g.minSpacingMm.toFixed(1),
       maxSpacingMm:+g.maxSpacingMm.toFixed(1)})),
     bars:r.rebars.map(b=>({
       layer:layerName(b.layer,lc),direction:b.acrossAxis===0?'V':'H',
-      runsAlong:b.acrossAxis===0?'Z':'X',
+      runsAlong:'XYZ'[runAxis(NRM(),b.acrossAxis)],
       start:b.start.map(v=>+v.toFixed(4)),end:b.end.map(v=>+v.toFixed(4)),
       lengthM:+Math.hypot(b.end[0]-b.start[0],b.end[1]-b.start[1],b.end[2]-b.start[2]).toFixed(3),
       points:b.pointCount}))
@@ -1864,10 +1932,17 @@ $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebar
   if(S.n)refreshStats();};
 // live preview: peak markers follow the 감도/최소 간격 boxes as they are typed
 ['tProm','tSpac'].forEach(id=>$(id).addEventListener('input',()=>{if(S.n)refreshStats();}));
-$('detDirs').onchange=e=>{
-  S.dirs=e.target.value==='x'?[2]:e.target.value==='z'?[0]:[0,2];
-  clearDetection();
+$('detDirs').onchange=()=>{applyDirs();clearDetection();};
+$('structMode').onchange=e=>{
+  S.mode=e.target.value;
+  syncDirOptions();clearDetection();
+  // axis roles changed: re-align and re-measure from scratch
+  if(S.n){S.yaw=0;S.tiltX=0;S.tiltZ=0;updateAlign();
+    $('yaw').value=0;$('yawVal').textContent='0.0°';$('hudYaw').textContent='0.0°';
+    $('tiltVal').textContent='0.0° / 0.0°';
+    recomputeAligned(false);}
 };
+syncDirOptions();
 
 /* ---- info tooltips (fixed-position so the scrolling rail can't clip them) ---- */
 (function(){
