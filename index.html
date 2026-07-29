@@ -194,8 +194,9 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
           <label>시공 현장</label>
           <select id="srvSite" disabled><option>— 목록을 불러오세요 —</option></select>
           <button class="btn" id="btnSites">현장 목록 불러오기</button>
-          <label>스캔 파일명 (업로드 시 서버가 부여한 이름)</label>
-          <input type="text" id="srvFile" placeholder="예: e0ad4447…_020130.ply" spellcheck="false">
+          <label>스캔 선택</label>
+          <select id="srvScan" disabled><option>— 현장을 먼저 선택하세요 —</option></select>
+          <input type="text" id="srvFile" placeholder="직접 입력: e0ad4447…_020130.ply" spellcheck="false">
           <button class="btn key" id="btnFetch">서버에서 PLY 가져오기</button>
           <div class="srv-status" id="srvStatus"></div>
           <p class="note" id="srvNote"></p>
@@ -1124,7 +1125,8 @@ function loadSample(){
 }
 
 /* ---------- server (BriconLab) ---------- */
-const SRV={base:localStorage.getItem('srvBase')||'http://api.briconlab.com:50001'};
+// HTTPS is live (port 443) — works from the published HTTPS page, no mixed content.
+const SRV={base:localStorage.getItem('srvBase')||'https://api.briconlab.com'};
 function srvStatus(msg,cls){const el=$('srvStatus');el.textContent=msg;el.className='srv-status '+(cls||'');}
 function srvMixedBlocked(){
   return location.protocol==='https:'&&SRV.base.startsWith('http:');
@@ -1156,16 +1158,43 @@ async function srvSites(){
     if(prev&&[...sel.options].some(o=>o.value===prev))sel.value=prev;
     if(sel.value)$('dashSite').value=sel.value;
     srvStatus(list.length?`현장 ${list.length}곳`:'등록된 현장이 없습니다',list.length?'ok':'bad');
+    if(sel.value)srvScans();
   }catch(e){srvStatus('조회 실패: '+e.message,'bad');}
+}
+/* GET /analysis/scan-list?site_id= -> scan_list[{scan_id, file_name, source_filename,
+   inspector, upload_time}]. The download key is file_name (scan_id is a DB row id). */
+async function srvScans(){
+  const site=$('srvSite').value,sel=$('srvScan');
+  sel.innerHTML='';sel.disabled=true;
+  if(!site)return;
+  try{
+    const r=await fetch(SRV.base+'/analysis/scan-list?site_id='+encodeURIComponent(site),
+      {signal:AbortSignal.timeout(15000)});
+    if(!r.ok){ // 500 is how the server reports "this site has no scans"
+      sel.innerHTML='<option value="">— 이 현장에는 스캔이 없습니다 —</option>';return;}
+    const j=await r.json(),list=j.scan_list||[];
+    if(!list.length){sel.innerHTML='<option value="">— 이 현장에는 스캔이 없습니다 —</option>';return;}
+    for(const s of list){
+      const o=document.createElement('option');
+      o.value=s.file_name;
+      o.dataset.scanId=s.scan_id;
+      const t=(s.upload_time||'').slice(5,16);
+      o.textContent=`${t} · ${s.inspector||'-'} · ${s.source_filename||s.file_name}`;
+      sel.appendChild(o);
+    }
+    sel.disabled=false;
+    $('srvFile').value=sel.value;
+    srvStatus(`스캔 ${list.length}건`,'ok');
+  }catch(e){sel.innerHTML='<option value="">— 스캔 목록 조회 실패 —</option>';}
 }
 async function srvFetch(){
   SRV.base=$('srvBase').value.trim().replace(/\/+$/,'');
   localStorage.setItem('srvBase',SRV.base);
   if(!srvGuard())return;
-  const fn=$('srvFile').value.trim();
-  if(!fn){srvStatus('스캔 파일명을 입력하세요','bad');return;}
-  srvStatus('다운로드 시도 중…','busy');
-  // Try candidate download endpoints (requested in api/WEBAPP_BACKEND_REQUEST.md).
+  const fn=($('srvFile').value.trim()||$('srvScan').value||'').trim();
+  if(!fn){srvStatus('스캔을 선택하거나 파일명을 입력하세요','bad');return;}
+  srvStatus('다운로드 중… (수십 MB일 수 있습니다)','busy');
+  // /analysis/ply-download?filename= is live; the others remain as fallbacks.
   for(const path of['/analysis/ply-download?filename=','/analysis/ply-file?filename=','/analysis/ply?filename=']){
     try{
       const r=await fetch(SRV.base+path+encodeURIComponent(fn),{signal:AbortSignal.timeout(120000)});
@@ -1425,6 +1454,11 @@ async function uploadUSDZ(){
   if(location.protocol==='https:'&&SRV.base.startsWith('http:')){
     say('HTTPS 페이지에서는 HTTP 서버 업로드가 차단됩니다. 파일을 로컬에 저장해 여세요.','bad');return;}
   if(site.disabled||!site.value){say('1단계의 서버 패널에서 현장 목록을 불러와 현장을 선택하세요.','bad');return;}
+  // ar-upload wants scan-list's numeric scan_id (the .ply filename overflows
+  // the server's column and comes back as "DB 오류 발생").
+  const scanSel=$('srvScan'),opt=scanSel.selectedOptions[0];
+  const scanId=opt&&opt.dataset.scanId?opt.dataset.scanId:'';
+  if(!scanId){say('1단계의 서버 패널에서 이 모델이 나온 스캔을 선택하세요 (ar-upload는 서버의 scan_id가 필요합니다).','bad');return;}
   const dia=Math.min(Math.max(parseFloat($('barDia').value)||16,6),51);
   const blob=new Blob([buildUSDZ(r,dia/2000)],{type:'model/vnd.usdz+zip'});
   const fname=`rebar_asbuilt_${stamp()}.usdz`;
@@ -1437,13 +1471,18 @@ async function uploadUSDZ(){
       try{
         const fd=new FormData();
         fd.append('file',blob,fname);
+        fd.append('scan_id',scanId);      // required by the server (string)
         fd.append('site_id',site.value);
         fd.append('source_filename',fname);
-        fd.append('remark','web-tool as-built rebar model'+($('srvFile').value.trim()?' · scan: '+$('srvFile').value.trim():''));
+        fd.append('remark','web-tool as-built rebar model · scan: '+($('srvFile').value.trim()||scanId));
         const resp=await fetch(SRV.base+path,{method:'POST',body:fd,signal:AbortSignal.timeout(120000)});
         if(resp.status===404||resp.status===405)continue;
         const txt=await resp.text();
-        if(resp.ok){say('업로드 완료: '+txt.slice(0,160),'ok');return;}
+        if(resp.ok){
+          let id='';try{id=JSON.parse(txt).ar_id||'';}catch(_){}
+          say('업로드 완료'+(id?' — ar_id '+id:'')+'. AR 앱의 모델 목록에서 확인하세요.','ok');return;}
+        if(resp.status===500&&txt.includes('DB')){
+          say('이 스캔에는 이미 AR 모델이 등록돼 있습니다 (스캔 1건당 1개). 다시 올리려면 서버에서 기존 모델을 삭제해야 합니다 — 그 전까지는 "USDZ 저장"으로 파일을 받아 두세요.','bad');return;}
         say(`서버 오류 HTTP ${resp.status}: ${txt.slice(0,160)}`,'bad');return;
       }catch(e){lastErr=e;} // network/timeout — remember, don't misreport as "no API"
     }
@@ -1614,7 +1653,8 @@ $('barDia').oninput=e=>{$('diaVal').textContent=e.target.value;};
 $('dashToken').value=localStorage.getItem('dashUploadToken')||'';
 {const d=new Date(),p=v=>String(v).padStart(2,'0');
  $('dashTime').value=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());}
-$('srvSite').addEventListener('change',e=>{if(e.target.value)$('dashSite').value=e.target.value;});
+$('srvSite').addEventListener('change',e=>{if(e.target.value)$('dashSite').value=e.target.value;srvScans();});
+$('srvScan').addEventListener('change',e=>{if(e.target.value)$('srvFile').value=e.target.value;});
 $('btnDetect').onclick=onDetect;
 $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebarTunables',JSON.stringify(TUN));tunToUI();};
 $('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
