@@ -239,7 +239,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>3</b>크로핑</h2>
-      <label>높이 — 철근 층 선택<i class="info" data-tip="**높이(중력축) 방향 밀도**입니다. 철근 매트는 얇은 층이라 뾰족한 봉우리로 나타납니다.
+      <label>세로(높이 Y) 방향 밀도 — 철근 층 선택<i class="info" data-tip="**높이(중력축) 방향 밀도**입니다. 철근 매트는 얇은 층이라 뾰족한 봉우리로 나타납니다.
 주황색 띠가 지금 선택된 높이 구간이고, ● 표시는 자동으로 찾은 층 후보입니다.
 
 이 그래프만 전체 높이 범위를 유지합니다 — 띠를 끌어 옮기려면 바깥이 보여야 하기 때문입니다.">i</i><span class="v" id="yRangeVal">—</span></label>
@@ -259,13 +259,13 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
         <span class="chip idle" id="quality">대기</span>
         <span class="m" id="qualityMeta">—</span>
       </div>
-      <label>가로 방향 밀도<i class="info" data-tip="**정렬된 가로축을 따라 점이 얼마나 몰려 있는지**를 보여줍니다.
+      <label>가로(X) 방향 밀도<i class="info" data-tip="**정렬된 가로축을 따라 점이 얼마나 몰려 있는지**를 보여줍니다.
 크로핑한 구간 안에서만 다시 계산되므로, 슬라이더를 움직이면 그래프도 함께 다시 그려집니다.
 
 ● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).
 검출과 같은 기준(감도 %·최소 간격)을 쓰므로 미리보기로 볼 수 있습니다.">i</i><span class="v" id="xPeaks">—</span></label>
       <div class="hist-wrap"><canvas class="hist" id="histX"></canvas></div>
-      <label>깊이 방향 밀도<i class="info" data-tip="**정렬된 깊이축을 따라 본 밀도**입니다.
+      <label>깊이(Z) 방향 밀도<i class="info" data-tip="**정렬된 깊이축을 따라 본 밀도**입니다.
 가로 방향과 직각인 배근(예: 상면 가로근)이 여기서 봉우리로 나타납니다.
 
 ● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).">i</i><span class="v" id="zPeaks">—</span></label>
@@ -275,6 +275,17 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>4</b>철근 검출</h2>
+      <label>검출할 철근 방향<i class="info" data-tip="**철근이 뻗어 있는 방향**을 고릅니다 (좌하단 축 화살표 기준).
+
+· 가로(X) 방향 = 빨간 화살표를 따라 누운 철근 → 깊이(Z) 방향 밀도의 봉우리로 찾습니다
+· 깊이(Z) 방향 = 파란 화살표를 따라 누운 철근 → 가로(X) 방향 밀도의 봉우리로 찾습니다
+
+한 방향만 필요하면 나머지를 끄면 오검출이 줄어듭니다.">i</i></label>
+      <select id="detDirs">
+        <option value="both">양방향 (가로 + 깊이)</option>
+        <option value="x">가로(X) 방향 철근만</option>
+        <option value="z">깊이(Z) 방향 철근만</option>
+      </select>
       <button class="btn key" id="btnDetect" disabled>철근 검출 실행</button>
       <details class="sub">
         <summary>검출 필터 임계값</summary>
@@ -381,9 +392,9 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
     </div>
     <div id="tip">드래그 회전 · 휠 확대</div>
     <div id="legend">
-      <div><i style="background:#FF3333"></i>상면 세로 <i style="background:#C2610A;margin-left:8px"></i>상면 가로</div>
-      <div><i style="background:#3366FF"></i>하면 세로 <i style="background:#008B8B;margin-left:8px"></i>하면 가로</div>
-      <div id="legendMid" style="display:none"><i style="background:#9933FF"></i>중간층 세로 <i style="background:#148A42;margin-left:8px"></i>중간층 가로</div>
+      <div><i style="background:#FF3333"></i>상면 깊이Z <i style="background:#C2610A;margin-left:8px"></i>상면 가로X</div>
+      <div><i style="background:#3366FF"></i>하면 깊이Z <i style="background:#008B8B;margin-left:8px"></i>하면 가로X</div>
+      <div id="legendMid" style="display:none"><i style="background:#9933FF"></i>중간층 깊이Z <i style="background:#148A42;margin-left:8px"></i>중간층 가로X</div>
     </div>
 
     <div id="welcome">
@@ -403,6 +414,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1,0,0,0,1],
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
+  dirs:[0,2],   // which across-axes to detect: 0 = bars running along Z(깊이), 2 = along X(가로)
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
   cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
 const $=id=>document.getElementById(id);
@@ -802,24 +814,25 @@ function findBars(slab,all,layerY,acrossIdx){
   const md=Math.max(1,Math.round((TUN.minSpacingMm/1000)/DET.barBin));
   const peaks=findPeaks(sm,maxV*TUN.prominencePct/100,md);
   const bw=(mx-mn)/(n-1),bars=[];
+  REJ.peaks+=peaks.length;
   for(const p of peaks){
     const pos=mn+p*bw,cluster=[];
     for(let i=0,k=0;i<slab.length;i+=3,k++)
       if(Math.abs(co[k]-pos)<=DET.barWinHalf)cluster.push(slab[i],slab[i+1],slab[i+2]);
     const cn=cluster.length/3;
-    if(cn<DET.barMinPts)continue;
+    if(cn<DET.barMinPts){REJ.fewPts++;continue;}
     // actual extent along the bar from percentiles (robust to strays)
     const runs=[];for(let i=0;i<cluster.length;i+=3)runs.push(cluster[i+runIdx]);
     runs.sort((a,b)=>a-b);
     const lo=runs[Math.floor((runs.length-1)*.02)],hi=runs[Math.floor((runs.length-1)*.98)];
-    if(hi-lo<TUN.minLengthCm/100)continue;
+    if(hi-lo<TUN.minLengthCm/100){REJ.short++;REJ.maxLenCm=Math.max(REJ.maxLenCm,(hi-lo)*100);continue;}
     // Filter ③: diffuse blob fills the ±15mm window; a bar concentrates
     const acr=[];for(let i=0;i<cluster.length;i+=3)acr.push(cluster[i+acrossIdx]);
     acr.sort((a,b)=>a-b);
     const iqr=acr[Math.floor((acr.length-1)*.75)]-acr[Math.floor((acr.length-1)*.25)];
-    if(iqr*1000>TUN.maxAcrossIQRMm)continue;
+    if(iqr*1000>TUN.maxAcrossIQRMm){REJ.wide++;REJ.minIqrMm=Math.min(REJ.minIqrMm,iqr*1000);continue;}
     // Filter ②: walls continue far above/below the slab; a rebar doesn't
-    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi))continue;
+    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi)){REJ.wall++;continue;}
     let sa=0,sy=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sy+=cluster[i+1];}
     const meanA=sa/cn,meanY=sy/cn;
     const a=[0,meanY,0],b=[0,meanY,0];
@@ -829,7 +842,21 @@ function findBars(slab,all,layerY,acrossIdx){
   }
   return bars;
 }
+/* Per-run rejection tally so a "nothing found" result can say WHICH stage
+   threw everything away instead of just suggesting the user fiddle. */
+let REJ={};
+function rejReset(){REJ={peaks:0,fewPts:0,short:0,wide:0,wall:0,thinSlab:0,lowGrid:0,
+  maxLenCm:0,minIqrMm:Infinity,bestGrid:0};}
+function rejWhy(){
+  const p=[];
+  if(REJ.wall)p.push(`벽·수직면 판정 ${REJ.wall}개 (필터② — 슬랩 위아래로 점이 이어짐)`);
+  if(REJ.wide)p.push(`단면이 넓음 ${REJ.wide}개 (필터③ — 가장 좁은 것도 ${REJ.minIqrMm.toFixed(0)}mm > ${TUN.maxAcrossIQRMm}mm)`);
+  if(REJ.short)p.push(`길이 부족 ${REJ.short}개 (가장 긴 것도 ${REJ.maxLenCm.toFixed(0)}cm < ${TUN.minLengthCm}cm)`);
+  if(REJ.fewPts)p.push(`점 부족 ${REJ.fewPts}개`);
+  return p;
+}
 function runDetection(){
+  rejReset();
   const flat=collectCroppedAligned();
   const inputPoints=flat.length/3;
   if(inputPoints<3000)return{err:'점이 부족합니다 (크롭 후 '+inputPoints.toLocaleString()+'개). 범위를 넓히거나 더 스캔하세요.'};
@@ -837,19 +864,20 @@ function runDetection(){
   const usedPoints=pts.length/3;
   if(usedPoints<2000)return{err:'유효한 점이 부족합니다.'};
   const layerYs=findLayerYs(pts);
-  if(!layerYs.length)return{err:'철근 층을 찾지 못했습니다.'};
+  if(!layerYs.length)return{err:'철근 층을 찾지 못했습니다. 세로(높이) 방향 밀도에 뚜렷한 봉우리가 없습니다 — 높이 범위를 철근 매트 부근으로 좁혀 보세요.'};
   const rebars=[],groups=[],accepted=[];
   for(const layerY of layerYs){
     const slab=[];
     for(let i=0;i<pts.length;i+=3)
       if(Math.abs(pts[i+1]-layerY)<=DET.slabHalf)slab.push(pts[i],pts[i+1],pts[i+2]);
-    if(slab.length/3<500)continue;
+    if(slab.length/3<500){REJ.thinSlab++;continue;}
     // Filter ①: uniform surfaces (floor/deck) have no grid contrast
     const contrast=Math.max(gridContrast(slab,0),gridContrast(slab,2));
-    if(contrast<TUN.gridnessMin)continue;
+    REJ.bestGrid=Math.max(REJ.bestGrid,contrast);
+    if(contrast<TUN.gridnessMin){REJ.lowGrid++;continue;}
     accepted.push(layerY);
     const layerIdx=accepted.length-1;
-    for(const acrossIdx of[0,2]){
+    for(const acrossIdx of S.dirs){
       const found=findBars(slab,pts,layerY,acrossIdx);
       if(!found.length)continue;
       const positions=found.map(b=>b.positionAcross).sort((a,b)=>a-b);
@@ -866,7 +894,19 @@ function runDetection(){
         rebars.push({layer:layerIdx,acrossAxis:acrossIdx,start:b.start,end:b.end,pointCount:b.pointCount});
     }
   }
-  if(!rebars.length)return{err:'철근을 검출하지 못했습니다. 임계값(감도)을 낮추거나 크롭을 조정해 보세요.'};
+  if(!rebars.length){
+    if(!accepted.length){
+      const m=[`철근 층을 인정하지 못했습니다 (후보 ${layerYs.length}개).`];
+      if(REJ.lowGrid)m.push(`격자성이 낮아 ${REJ.lowGrid}개 제외 — 측정값 최대 ${REJ.bestGrid.toFixed(1)} < 기준 ${TUN.gridnessMin} (필터①).`,
+        '평평한 바닥·거푸집일 수 있습니다. 실제로 배근된 층이면 ① 값을 낮춰 보세요.');
+      if(REJ.thinSlab)m.push(`슬랩 두께 안 점이 너무 적어 ${REJ.thinSlab}개 제외.`);
+      return{err:m.join('\n')};
+    }
+    const why=rejWhy();
+    return{err:[`층 ${accepted.length}개는 찾았지만 봉우리 ${REJ.peaks}개가 모두 걸러졌습니다.`,
+      ...why.map(t=>'· '+t),
+      why.length?'해당 임계값을 완화하면 검출됩니다.':'감도 %를 낮춰 보세요.'].join('\n')};
+  }
   return{rebars,groups,layerYs:accepted,inputPoints,usedPoints};
 }
 const layerName=(l,total)=>total<=1?'단일층':(l===0?'하면':(l===total-1?'상면':'중간층'));
@@ -1391,7 +1431,7 @@ function showDetection(res){
   let html=`<div class="row"><span>검출 철근</span><span class="hl">${res.rebars.length}개</span></div>`;
   const gs=[...res.groups].sort((a,b)=>(b.layer-a.layer)||(b.acrossAxis-a.acrossAxis));
   for(const g of gs){
-    const dir=g.acrossAxis===0?'세로':'가로';
+    const dir=g.acrossAxis===0?'깊이Z':'가로X';   // direction the bar runs
     const sp=g.count>=2?` · 평균 ${Math.round(g.meanSpacingMm)}mm (${Math.round(g.minSpacingMm)}–${Math.round(g.maxSpacingMm)})`:'';
     html+=`<div class="row"><span>${layerName(g.layer,lc)} ${dir}</span><span>${g.count}개${sp}</span></div>`;
   }
@@ -1457,12 +1497,14 @@ function detectionPayload(r){
     usedPoints:r.usedPoints,
     tunables:{...TUN},
     groups:r.groups.map(g=>({
-      layer:layerName(g.layer,lc),direction:g.acrossAxis===0?'V':'H',count:g.count,
+      layer:layerName(g.layer,lc),direction:g.acrossAxis===0?'V':'H',
+      runsAlong:g.acrossAxis===0?'Z':'X',count:g.count,
       meanSpacingMm:+g.meanSpacingMm.toFixed(1),
       minSpacingMm:+g.minSpacingMm.toFixed(1),
       maxSpacingMm:+g.maxSpacingMm.toFixed(1)})),
     bars:r.rebars.map(b=>({
       layer:layerName(b.layer,lc),direction:b.acrossAxis===0?'V':'H',
+      runsAlong:b.acrossAxis===0?'Z':'X',
       start:b.start.map(v=>+v.toFixed(4)),end:b.end.map(v=>+v.toFixed(4)),
       lengthM:+Math.hypot(b.end[0]-b.start[0],b.end[1]-b.start[1],b.end[2]-b.start[2]).toFixed(3),
       points:b.pointCount}))
@@ -1526,9 +1568,9 @@ function usdzZip(files){
   return out;
 }
 const MAT_DEFS=[  // key, display, diffuseColor — matches barColor() exactly
-  ['TopV','상면 세로',[1,.2,.2]],['TopH','상면 가로',[.76,.38,.04]],
-  ['BotV','하면 세로',[.2,.4,1]],['BotH','하면 가로',[0,.545,.545]],
-  ['MidV','중간층 세로',[.6,.2,1]],['MidH','중간층 가로',[.08,.54,.26]]];
+  ['TopV','상면 깊이Z',[1,.2,.2]],['TopH','상면 가로X',[.76,.38,.04]],
+  ['BotV','하면 깊이Z',[.2,.4,1]],['BotH','하면 가로X',[0,.545,.545]],
+  ['MidV','중간층 깊이Z',[.6,.2,1]],['MidH','중간층 가로X',[.08,.54,.26]]];
 function matKey(layer,acrossAxis,lc){
   const isTop=lc<=1||layer===lc-1,isBottom=lc>1&&layer===0;
   const d=acrossAxis===0?'V':'H';
@@ -1822,6 +1864,10 @@ $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebar
   if(S.n)refreshStats();};
 // live preview: peak markers follow the 감도/최소 간격 boxes as they are typed
 ['tProm','tSpac'].forEach(id=>$(id).addEventListener('input',()=>{if(S.n)refreshStats();}));
+$('detDirs').onchange=e=>{
+  S.dirs=e.target.value==='x'?[2]:e.target.value==='z'?[0]:[0,2];
+  clearDetection();
+};
 
 /* ---- info tooltips (fixed-position so the scrolling rail can't clip them) ---- */
 (function(){
