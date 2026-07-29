@@ -146,6 +146,10 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 #views button:hover{color:var(--sheet-num);background:#fff}
 #tip{position:absolute;bottom:14px;left:14px;font:11px/1.5 var(--mono);color:var(--sheet-dim);
   pointer-events:none}
+#axisKey{position:absolute;bottom:36px;left:14px;display:none;gap:11px;
+  font:600 10.5px/1 var(--mono);color:var(--sheet-ink);pointer-events:none}
+#axisKey.show{display:flex}
+#axisKey i{display:inline-block;width:14px;height:2px;margin-right:5px;vertical-align:3px}
 #legend{position:absolute;bottom:14px;right:14px;padding:8px 11px;border-radius:var(--r);
   background:rgba(255,255,255,.86);border:1px solid var(--sheet-line);backdrop-filter:blur(7px);
   box-shadow:0 1px 4px rgba(30,40,55,.08);font:10.5px/1.8 var(--mono);color:var(--sheet-ink);display:none}
@@ -227,6 +231,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <h2><b>2</b>축 정렬</h2>
       <button class="btn" id="btnAuto" disabled>자동 정렬 (수평 + 격자 방향)</button>
       <label>수평 보정 X·Z축<span class="v" id="tiltVal">0.0° / 0.0°</span></label>
+      <button class="btn ghost" id="btnAxes" disabled>축 화살표 · 표시</button>
       <label>회전 미세조정 (수직축 기준)<span class="v" id="yawVal">0.0°</span></label>
       <input type="range" id="yaw" min="-90" max="90" step="0.5" value="0" disabled>
       <p class="note">철근이 화면의 가로·세로와 나란해지면 정렬 완료. <b>위에서 보기</b>로 확인하세요.</p>
@@ -369,6 +374,11 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <button data-view="side">측면</button>
       <button data-view="iso">3D</button>
     </div>
+    <div id="axisKey">
+      <span><i style="background:#BF2921"></i>가로 X</span>
+      <span><i style="background:#148249"></i>높이 Y</span>
+      <span><i style="background:#1245D8"></i>깊이 Z</span>
+    </div>
     <div id="tip">드래그 회전 · 휠 확대</div>
     <div id="legend">
       <div><i style="background:#FF3333"></i>상면 세로 <i style="background:#C2610A;margin-left:8px"></i>상면 가로</div>
@@ -392,7 +402,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 "use strict";
 const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1,0,0,0,1],
   bounds:null,crop:null,sample:null,kept:0,
-  colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,
+  colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
   cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
 const $=id=>document.getElementById(id);
@@ -870,7 +880,7 @@ function barColor(layer,acrossAxis,layerCount){
 }
 
 /* ---------- WebGL ---------- */
-let gl,prog,bufPos,bufCol,bufOvPos,bufOvCol,ovCount=0,loc={};
+let gl,prog,bufPos,bufCol,bufOvPos,bufOvCol,ovCount=0,bufAxPos,bufAxCol,axCount=0,maxLineW=1,loc={};
 const VS=`attribute vec3 aPos;attribute vec3 aCol;
 uniform mat4 uMVP;uniform mat3 uAlign;uniform float uPointSize,uYMin,uYRange;
 uniform vec3 uCropMin,uCropMax;uniform int uColorMode,uHideOutside;
@@ -908,7 +918,10 @@ function initGL(){
   loc.aPos=gl.getAttribLocation(prog,'aPos');loc.aCol=gl.getAttribLocation(prog,'aCol');
   bufPos=gl.createBuffer();bufCol=gl.createBuffer();
   bufOvPos=gl.createBuffer();bufOvCol=gl.createBuffer();
+  bufAxPos=gl.createBuffer();bufAxCol=gl.createBuffer();
+  maxLineW=(gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)||[1,1])[1]||1;
   gl.enable(gl.DEPTH_TEST);gl.clearColor(0,0,0,0); // transparent — CSS drafting grid shows through
+  uploadAxes();   // unit geometry, never changes
 }
 /* Display subsample: huge scans (10M+ pts) would be drawn in full every
    frame otherwise. Analysis/export always use the full-resolution arrays. */
@@ -952,6 +965,39 @@ function uploadOverlay(){
   if(!ovCount)return;
   gl.bindBuffer(gl.ARRAY_BUFFER,bufOvPos);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(P),gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER,bufOvCol);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(C),gl.STATIC_DRAW);
+}
+/* Axis gizmo: shows which way X (가로), Y (높이) and Z (깊이) point after
+   alignment, so the user can check that the rebar grid runs along them.
+   Drawn as a fixed-size triad in a screen corner with its own viewport and
+   camera — anchoring it to the cloud's corner pushed it off-screen. Unit
+   geometry, built once; only the camera direction changes. */
+const AXIS_RGB=[[0.75,0.16,0.13],[0.08,0.51,0.29],[0.07,0.27,0.85]];
+const GIZMO_PX=88,GIZMO_PAD=14,GIZMO_BOTTOM=54;
+function uploadAxes(){
+  axCount=0;
+  if(!gl)return;
+  const L=1,hl=.24,hw=.09;
+  const P=[],C=[];
+  // dense points, not GL lines: browsers clamp lineWidth to 1px, too faint here
+  const seg=(a,z,col,n)=>{
+    for(let i=0;i<=n;i++){const t=i/n;
+      P.push(a[0]+(z[0]-a[0])*t,a[1]+(z[1]-a[1])*t,a[2]+(z[2]-a[2])*t);
+      C.push(col[0],col[1],col[2]);}
+  };
+  const o=[0,0,0];
+  for(let k=0;k<3;k++){
+    const d=[0,0,0];d[k]=1;
+    const col=AXIS_RGB[k];
+    const tip=[d[0]*L,d[1]*L,d[2]*L];
+    seg(o,tip,col,150);
+    const p1=d[1]?[1,0,0]:[0,1,0];
+    const p2=[d[1]*p1[2]-d[2]*p1[1],d[2]*p1[0]-d[0]*p1[2],d[0]*p1[1]-d[1]*p1[0]];
+    for(const s of[1,-1])for(const p of[p1,p2])
+      seg(tip,[tip[0]-d[0]*hl+p[0]*hw*s,tip[1]-d[1]*hl+p[1]*hw*s,tip[2]-d[2]*hl+p[2]*hw*s],col,26);
+  }
+  axCount=P.length/3;
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufAxPos);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(P),gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufAxCol);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(C),gl.STATIC_DRAW);
 }
 const persp=(f,a,n,fa)=>{const t=1/Math.tan(f/2);return[t/a,0,0,0,0,t,0,0,0,0,(fa+n)/(n-fa),-1,0,0,2*fa*n/(n-fa),0];};
 function lookAt(e,c,u){
@@ -1005,6 +1051,29 @@ function draw(){
     gl.bindBuffer(gl.ARRAY_BUFFER,bufOvCol);gl.enableVertexAttribArray(loc.aCol);
     gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
     gl.drawArrays(gl.POINTS,0,ovCount);
+  }
+  if(S.showAxes&&axCount>0){
+    // corner gizmo: own square viewport + own camera at a fixed distance, so it
+    // keeps a constant size and stays on screen at any zoom or cloud extent
+    const gs=GIZMO_PX*dpr;
+    gl.viewport(GIZMO_PAD*dpr,GIZMO_BOTTOM*dpr,gs,gs);
+    const gd=3.4;
+    const ge=[gd*Math.cos(elev)*Math.sin(azim),gd*Math.sin(elev),gd*Math.cos(elev)*Math.cos(azim)];
+    const gm=mul(persp(38*Math.PI/180,1,.1,20),lookAt(ge,[0,0,0],up));
+    gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(gm));
+    gl.uniformMatrix3fv(loc.uAlign,false,new Float32Array([1,0,0,0,1,0,0,0,1]));
+    gl.uniform3fv(loc.uCropMin,new Float32Array([-1e9,-1e9,-1e9]));
+    gl.uniform3fv(loc.uCropMax,new Float32Array([1e9,1e9,1e9]));
+    gl.uniform1i(loc.uColorMode,0);gl.uniform1i(loc.uHideOutside,0);
+    gl.uniform1f(loc.uPointSize,Math.max(3,2.5*dpr));
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufAxPos);gl.enableVertexAttribArray(loc.aPos);
+    gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufAxCol);gl.enableVertexAttribArray(loc.aCol);
+    gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
+    gl.disable(gl.DEPTH_TEST);
+    gl.drawArrays(gl.POINTS,0,axCount);
+    gl.enable(gl.DEPTH_TEST);
+    gl.viewport(0,0,cv.width,cv.height);
   }
 }
 /* ---------- histogram render ---------- */
@@ -1187,6 +1256,8 @@ function adopt(parsed){
   $('statSize').textContent=`${(b.max[0]-b.min[0]).toFixed(2)}·${(b.max[1]-b.min[1]).toFixed(2)}·${(b.max[2]-b.min[2]).toFixed(2)} m`;
   $('welcome').classList.add('gone');
   enableUI(true);
+  $('btnAxes').disabled=false;
+  $('axisKey').classList.toggle('show',S.showAxes);
 }
 async function loadFile(f){
   const st=$('statCount'),old=st.textContent;
@@ -1779,6 +1850,9 @@ $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebar
     el.tabIndex=0;
   });
 })();
+$('btnAxes').onclick=()=>{S.showAxes=!S.showAxes;
+  $('btnAxes').textContent='축 화살표 · '+(S.showAxes?'표시':'숨김');
+  $('axisKey').classList.toggle('show',S.showAxes&&S.n>0);};
 $('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
   $('btnShowCloud').textContent='점군 · '+(S.showCloud?'표시':'숨김');};
 $('btnShowModel').onclick=()=>{S.showModel=!S.showModel;
