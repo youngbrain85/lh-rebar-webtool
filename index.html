@@ -1476,9 +1476,14 @@ async function uploadDashboard(){
   const r=S.det;if(!r)return;
   const st=$('dashStatus');
   const say=(m,c)=>{st.textContent=m;st.className='srv-status '+(c||'');};
-  const site=$('dashSite').value.trim(),when=$('dashTime').value.trim(),tok=$('dashToken').value.trim();
+  const site=$('dashSite').value.trim(),raw=$('dashTime').value.trim(),tok=$('dashToken').value.trim();
   if(!/^\d+$/.test(site)){say('site_id는 숫자여야 합니다 (예: 5).','bad');return;}
-  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(when)){say('촬영 시각은 정확히 YYYY-MM-DDTHH:MM 형식이어야 합니다 (초/타임존 없이).','bad');return;}
+  // The server enforces YYYY-MM-DDTHH:MM, but scan metadata is usually full
+  // ISO8601 — accept a pasted "…T10:30:00Z" and normalize to the safe subset.
+  const m=raw.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?\s*(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if(!m){say('촬영 시각은 YYYY-MM-DDTHH:MM 형식이어야 합니다 (초·타임존이 붙어 있으면 자동으로 잘라냅니다).','bad');return;}
+  const when=m[1];
+  if(when!==raw)$('dashTime').value=when;   // show the user exactly what is sent
   if(!tok){say('업로드 토큰을 입력하세요 (대시보드팀에서 전달받은 SCAN_UPLOAD_TOKEN).','bad');return;}
   const fd=new FormData();
   fd.append('site_id',site);
