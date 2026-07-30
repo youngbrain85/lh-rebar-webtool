@@ -267,6 +267,11 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <p class="note">박스의 <b>화살표를 끌면</b> 그 면이 잘리고, <b>원형 링을 끌면</b> 축이 회전합니다
         (CloudCompare 단면 도구와 같은 방식). 빈 곳을 끌면 시점 회전입니다.</p>
       <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
+      <button class="btn key" id="btnCommit" disabled>정렬 · 크로핑 확정 → 검출 단계로</button>
+      <div class="srv-status" id="commitInfo"></div>
+      <p class="note">확정하면 <b>회전과 크롭이 데이터에 적용</b>되어 그 결과로 고정됩니다.
+        이후 검출은 이 확정본만 사용하므로 잘라낸 벽·바닥판은 아예 들어오지 않습니다.
+        확정 후에도 더 잘라내고 다시 확정할 수 있습니다.</p>
       <div class="readout" style="margin-top:9px"><span>남은 점</span><span class="em" id="statKept">—</span></div>
       <div class="verdict" style="margin-top:9px">
         <span class="chip idle" id="quality">대기</span>
@@ -420,6 +425,7 @@ const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
   section:true, // CloudCompare-style interactive crop box
+  committed:false, bakedA:[1,0,0,0,1,0,0,0,1],  // rotation already applied to S.pos
   mode:'wall',  // default: 옹벽. 'wall' = layered along Z (두께/폭) | 'slab' = along Y
   dirs:[0,2],   // across-axes to detect; reset when the mode changes
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
@@ -639,6 +645,50 @@ function autoYawRad(sub,buf,tx,tz){
   return y;
 }
 function autoLevel(){const a=autoAlign();return{rx:a.tiltX,rz:a.tiltZ,yaw:a.yaw};}
+const mul3=(a,b)=>{const o=new Array(9);
+  for(let r=0;r<3;r++)for(let c=0;c<3;c++)
+    o[r*3+c]=a[r*3]*b[c]+a[r*3+1]*b[3+c]+a[r*3+2]*b[6+c];
+  return o;};
+/* Bake the current rotation + crop into the data ("확정").
+   Stage 4 works on this fixed cloud, so the frame can no longer shift under
+   detection and the cropped-away floor/wall never reaches the filters.
+   S.bakedA accumulates what has been baked so an export can still return to
+   the original scan coordinates. */
+function commitCrop(){
+  if(!S.n)return;
+  const A=S.A,c=S.crop;
+  const ax=c.min[0],bx=c.max[0],ay=c.min[1],by=c.max[1],az=c.min[2],bz=c.max[2];
+  let m=0;
+  for(let i=0;i<S.n;i++){
+    const j=i*3,px=S.pos[j],py=S.pos[j+1],pz=S.pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
+    if(x>=ax&&x<=bx&&y>=ay&&y<=by&&z>=az&&z<=bz)m++;
+  }
+  if(m<1000){alert(`확정할 점이 너무 적습니다 (${m.toLocaleString()}개). 크롭 범위를 넓혀 주세요.`);return;}
+  const pos=new Float32Array(m*3),col=new Uint8Array(m*3);
+  for(let i=0,w=0;i<S.n;i++){
+    const j=i*3,px=S.pos[j],py=S.pos[j+1],pz=S.pos[j+2];
+    const x=A[0]*px+A[1]*py+A[2]*pz,y=A[3]*px+A[4]*py+A[5]*pz,z=A[6]*px+A[7]*py+A[8]*pz;
+    if(x<ax||x>bx||y<ay||y>by||z<az||z>bz)continue;
+    const q=w*3;pos[q]=x;pos[q+1]=y;pos[q+2]=z;
+    col[q]=S.col[j];col[q+1]=S.col[j+1];col[q+2]=S.col[j+2];
+    w++;
+  }
+  S.bakedA=mul3(A,S.bakedA);
+  const before=S.n;
+  S.n=m;S.pos=pos;S.col=col;
+  S.yaw=0;S.tiltX=0;S.tiltZ=0;updateAlign();
+  S.sample=buildSample(S.n,300000);
+  uploadCloud();
+  recomputeAligned(false);
+  showAlignAngles();
+  S.committed=true;
+  $('btnDetect').disabled=false;
+  $('statCount').textContent=S.n.toLocaleString()+
+    (S.renderStride>1?` (표시 ${S.renderN.toLocaleString()})`:'');
+  $('commitInfo').textContent=`확정됨 — ${before.toLocaleString()} → ${m.toLocaleString()}점, 회전이 데이터에 적용됨`;
+  $('commitInfo').className='srv-status ok';
+}
 /* one place that writes the alignment angles into the UI */
 function showAlignAngles(){
   const d=v=>(v*180/Math.PI).toFixed(1);
@@ -710,7 +760,12 @@ function countKept(){
    ================================================================== */
 const DET={voxel:.004,layerBin:.005,slabHalf:.020,layerMinSep:.040,maxLayers:3,
   barBin:.004,barWinHalf:.015,barMinPts:25,sigma:2.0,wallProbe:.12};
-const TUN_DEFAULT={gridnessMin:2.0,wallOccupancyMax:0.5,maxAcrossIQRMm:20,
+/* Filters ① and ② exist to keep a floor/deck or a crossing wall from being
+   read as rebar. Detection now runs on the committed crop, where those are
+   already cut away, so they default to permissive (① 1.2) and off (② 1.0)
+   rather than rejecting real mats. Raise them if an uncropped surface ever
+   does sneak in. */
+const TUN_DEFAULT={gridnessMin:1.2,wallOccupancyMax:1.0,maxAcrossIQRMm:20,
   minSpacingMm:60,minLengthCm:15,prominencePct:8};
 let TUN={...TUN_DEFAULT};
 try{const t=JSON.parse(localStorage.getItem('rebarTunables')||'null');if(t)TUN={...TUN_DEFAULT,...t};}catch(_){}
@@ -906,7 +961,8 @@ function findBars(slab,all,layerY,acrossIdx,nrm){
     // formwork behind the mat, so the same probe rejects every real bar — it is
     // skipped there (measured: it vetoed 25/25 and 19/19 candidates on the
     // 옹벽 scans). Filters ① and ③ still guard against blobs and flat faces.
-    if(nrm!==2&&isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi,nrm)){REJ.wall++;continue;}
+    if(nrm!==2&&TUN.wallOccupancyMax<1&&
+       isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi,nrm)){REJ.wall++;continue;}
     let sa=0,sn=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sn+=cluster[i+nrm];}
     const meanA=sa/cn,meanN=sn/cn;
     const a=[0,0,0],b=[0,0,0];
@@ -1457,7 +1513,7 @@ function reframeCrop(oldCrop,oldBounds){
   S.cam.target=[(c.min[0]+c.max[0])/2,(c.min[1]+c.max[1])/2,(c.min[2]+c.max[2])/2];
   clearDetection();uploadSection();syncSliders();refreshStats();
 }
-const enableUI=on=>['btnAuto','yaw','yMin','yMax','xMin','xMax','zMin','zMax','btnReset','btnExport','btnLayer','btnDetect']
+const enableUI=on=>['btnAuto','yaw','yMin','yMax','xMin','xMax','zMin','zMax','btnReset','btnExport','btnLayer','btnCommit']
   .forEach(id=>$(id).disabled=!on);
 
 function adopt(parsed){
@@ -1478,6 +1534,9 @@ function adopt(parsed){
   enableUI(true);
   $('btnAxes').disabled=false;
   $('btnSection').disabled=false;
+  S.committed=false;S.bakedA=[1,0,0,0,1,0,0,0,1];
+  $('btnDetect').disabled=true;
+  $('commitInfo').textContent='';$('commitInfo').className='srv-status';
   $('axisKey').classList.toggle('show',S.showAxes);
 }
 async function loadFile(f){
@@ -1712,18 +1771,9 @@ function onDetect(){
   const btn=$('btnDetect');btn.disabled=true;btn.textContent='검출 중…';
   setTimeout(()=>{
     try{
-      // If never aligned, do the full stage-2 alignment first (level + yaw).
-      if(S.yaw===0&&S.tiltX===0&&S.tiltZ===0){
-        const oldCrop={min:[...S.crop.min],max:[...S.crop.max]};
-        const oldBounds={min:[...S.bounds.min],max:[...S.bounds.max]};
-        const a=autoAlign();
-        const changed=Math.abs(a.tiltX)>1e-4||Math.abs(a.tiltZ)>1e-4||Math.abs(a.yaw)>0.015;
-        if(changed){
-          S.yaw=a.yaw;S.tiltX=a.tiltX;S.tiltZ=a.tiltZ;updateAlign();
-          showAlignAngles();
-          reframeCrop(oldCrop,oldBounds); // carry the user's crop into the new frame
-        }
-      }
+      // No auto-align here any more: detection always runs on the committed
+      // cloud, whose rotation is already baked in (angles are back at 0, so the
+      // old "never aligned?" test would have re-rotated the fixed data).
       const res=runDetection();
       if(res.err){clearDetection();alert(res.err);}else showDetection(res);
     }finally{
@@ -2037,11 +2087,16 @@ function exportPLY(){
   const body=new ArrayBuffer(m*15),dv=new DataView(body);
   for(let k=0;k<m;k++){
     const i=keep[k],j=i*3;let X,Y,Z;
+    const px=pos[j],py=pos[j+1],pz=pos[j+2];
     if(S.exportAligned){
-      const px=pos[j],py=pos[j+1],pz=pos[j+2];
       X=A[0]*px+A[1]*py+A[2]*pz;Y=A[3]*px+A[4]*py+A[5]*pz;Z=A[6]*px+A[7]*py+A[8]*pz;
     }
-    else{X=pos[j];Y=pos[j+1];Z=pos[j+2];}
+    else{
+      // stored points already carry the baked rotation — undo it (Bᵀ) to get
+      // back to the original scan coordinates
+      const B=S.bakedA;
+      X=B[0]*px+B[3]*py+B[6]*pz;Y=B[1]*px+B[4]*py+B[7]*pz;Z=B[2]*px+B[5]*py+B[8]*pz;
+    }
     const o=k*15;
     dv.setFloat32(o,X,true);dv.setFloat32(o+4,Y,true);dv.setFloat32(o+8,Z,true);
     dv.setUint8(o+12,hasColor?col[j]:200);dv.setUint8(o+13,hasColor?col[j+1]:200);
@@ -2092,6 +2147,7 @@ $('btnLayer').onclick=()=>{
   S.crop.max[1]=Math.min(S.bounds.max[1],Math.max(...ys)+.03);
   clearDetection();uploadSection();syncSliders();refreshStats();
 };
+$('btnCommit').onclick=commitCrop;
 $('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();uploadSection();syncSliders();refreshStats();};
 $('btnColor').onclick=()=>{
   const modes=S.hasColor?[0,1,2]:[1,2],names={0:'RGB',1:'높이',2:'단색'};
