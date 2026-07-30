@@ -236,8 +236,8 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
 자동 정렬도 이 설정에 맞춰 최적화 축을 바꿉니다.">i</i></label>
       <select id="structMode">
+        <option value="wall" selected>수직 벽 · 옹벽 (기본)</option>
         <option value="slab">수평 슬랩 (바닥·지반)</option>
-        <option value="wall">수직 벽 · 옹벽</option>
       </select>
       <button class="btn" id="btnAuto" disabled>자동 정렬 (수평 + 격자 방향)</button>
       <label>수평 보정 X·Z축<span class="v" id="tiltVal">0.0° / 0.0°</span></label>
@@ -420,7 +420,7 @@ const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
   section:true, // CloudCompare-style interactive crop box
-  mode:'slab',  // 'slab' (layered along Y) | 'wall' (layered along Z, thickness)
+  mode:'wall',  // default: 옹벽. 'wall' = layered along Z (두께/폭) | 'slab' = along Y
   dirs:[0,2],   // across-axes to detect; reset when the mode changes
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
   cam:{azim:.6,elev:.45,dist:5,target:[0,0,0]}};
@@ -574,52 +574,84 @@ function peakiness(v,bin){
 }
 /* Level search: tilt about X/Z (±3°) that makes the Y histogram sharpest —
    flat layers collapse into thin peaks exactly when the slab is level. */
-function autoLevel(){
-  // The objective is a sharp density peak along the LAYERING axis: height for a
-  // slab, thickness for a wall. Rows of Rz(tz)Rx(tx): y = [sz, cz·cx, -cz·sx],
-  // z = [0, sx, cx].
-  const nrm=NRM();
-  const sub=buildSample(S.n,40000),ys=new Float32Array(sub.length),pos=S.pos;
-  const score=(rx,rz)=>{
-    const cx=Math.cos(rx),sx=Math.sin(rx),cz=Math.cos(rz),sz=Math.sin(rz);
-    const a=nrm===1?sz:0,b=nrm===1?cz*cx:sx,c=nrm===1?-cz*sx:cx;
-    for(let k=0;k<sub.length;k++){const i=sub[k]*3;ys[k]=a*pos[i]+b*pos[i+1]+c*pos[i+2];}
-    return peakiness(ys,.004);
-  };
-  const R=3*Math.PI/180,C=R/5;
-  let bx=0,bz=0,best=score(0,0);
-  for(let rx=-R;rx<=R+1e-9;rx+=C)for(let rz=-R;rz<=R+1e-9;rz+=C){
-    const v=score(rx,rz);if(v>best){best=v;bx=rx;bz=rz;}
-  }
-  for(let rx=bx-C;rx<=bx+C+1e-9;rx+=C/4)for(let rz=bz-C;rz<=bz+C+1e-9;rz+=C/4){
-    const v=score(rx,rz);if(v>best){best=v;bx=rx;bz=rz;}
-  }
-  return{rx:bx,rz:bz};
+/* One row of A = Ry(yaw)·Rz(tz)·Rx(tx) — the same matrix updateAlign() builds,
+   so a search here and the rendered/detected frame can never disagree. */
+function alignRow(yaw,tx,tz,axis){
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(tx),sx=Math.sin(tx),
+        cz=Math.cos(tz),sz=Math.sin(tz);
+  const l=[[cz,-sz*cx,sz*sx],[sz,cz*cx,-cz*sx],[0,sx,cx]];
+  if(axis===1)return l[1];
+  if(axis===0)return[cy*l[0][0]+sy*l[2][0],cy*l[0][1]+sy*l[2][1],cy*l[0][2]+sy*l[2][2]];
+  return[-sy*l[0][0]+cy*l[2][0],-sy*l[0][1]+cy*l[2][1],-sy*l[0][2]+cy*l[2][2]];
 }
-function autoYaw(){
-  // yaw is searched on LEVELED coordinates so tilt can't skew the grid angle
-  const sub=buildSample(S.n,40000),ax=new Float32Array(sub.length),az=new Float32Array(sub.length);
-  const lx=new Float32Array(sub.length),lz=new Float32Array(sub.length);
-  const cx=Math.cos(S.tiltX),sx=Math.sin(S.tiltX),cz=Math.cos(S.tiltZ),sz=Math.sin(S.tiltZ);
-  for(let k=0;k<sub.length;k++){
-    const i=sub[k]*3,px=S.pos[i],py=S.pos[i+1],pz=S.pos[i+2];
-    lx[k]=cz*px-sz*cx*py+sz*sx*pz;
-    lz[k]=sx*py+cx*pz;
+/* Sharpness of the point density projected on one aligned axis. */
+function alignScore(sub,buf,yaw,tx,tz,axis,bin){
+  const r=alignRow(yaw,tx,tz,axis),pos=S.pos;
+  for(let k=0;k<sub.length;k++){const i=sub[k]*3;
+    buf[k]=r[0]*pos[i]+r[1]*pos[i+1]+r[2]*pos[i+2];}
+  return peakiness(buf,bin);
+}
+/* Coarse sweep then refine around the winner. The refine bounds are captured
+   BEFORE the loop — using the running best as the bound lets it walk away
+   (that bug drove a ±3° search out to 85°). */
+function scan1(f,lo,hi,step){
+  let bv=-1,bp=lo;
+  for(let v=lo;v<=hi+1e-9;v+=step){const s=f(v);if(s>bv){bv=s;bp=v;}}
+  const c=bp,fine=step/4;
+  for(let v=c-step;v<=c+step+1e-9;v+=fine){const s=f(v);if(s>bv){bv=s;bp=v;}}
+  return bp;
+}
+/* Staged alignment. The stages differ because a rotation only sharpens an axis
+   it actually moves:
+     slab (normal Y) — tiltX and tiltZ both tilt Y; yaw leaves Y alone and is
+                       found from the two horizontal grids.
+     wall (normal Z) — tiltX and yaw swing the wall face-on; tiltZ cannot change
+                       Z at all, so it is fitted last on Y, where it decides
+                       whether the horizontal bars come out horizontal. */
+const TILT_MAX=3*Math.PI/180;
+function autoAlign(){
+  const sub=buildSample(S.n,40000),buf=new Float32Array(sub.length);
+  const nrm=NRM(),step=TILT_MAX/5;
+  let yaw=0,tx=0,tz=0;
+  if(nrm===1){
+    tx=scan1(v=>alignScore(sub,buf,0,v,tz,1,.004),-TILT_MAX,TILT_MAX,step);
+    tz=scan1(v=>alignScore(sub,buf,0,tx,v,1,.004),-TILT_MAX,TILT_MAX,step);
+    tx=scan1(v=>alignScore(sub,buf,0,v,tz,1,.004),-TILT_MAX,TILT_MAX,step);
+    yaw=autoYawRad(sub,buf,tx,tz);
+  }else{
+    tx=scan1(v=>alignScore(sub,buf,0,v,0,2,.004),-TILT_MAX,TILT_MAX,step);
+    yaw=autoYawRad(sub,buf,tx,0);
+    tx=scan1(v=>alignScore(sub,buf,yaw,v,0,2,.004),-TILT_MAX,TILT_MAX,step);
+    tz=scan1(v=>alignScore(sub,buf,yaw,tx,v,1,.004),-TILT_MAX,TILT_MAX,step);
   }
-  // Slab: both horizontal axes should become grid-aligned, so score both.
-  // Wall: yaw must turn the wall face-on, i.e. make its thickness (Z) sharp —
-  // scoring X too would fight that, since the wall spans X broadly.
+  return{yaw,tiltX:tx,tiltZ:tz};
+}
+/* yaw in radians. Slab: square both horizontal grids. Wall: turn it face-on,
+   which means the thickness axis becomes sharp — and that is unique mod 180. */
+function autoYawRad(sub,buf,tx,tz){
   const wall=S.mode==='wall';
-  const score=deg=>{
-    const r=deg*Math.PI/180,c=Math.cos(r),s=Math.sin(r);
-    for(let k=0;k<sub.length;k++){const x=lx[k],z=lz[k];ax[k]=x*c+z*s;az[k]=-x*s+z*c;}
-    return wall?peakiness(az,.004):peakiness(ax,.008)+peakiness(az,.008);
-  };
-  const SPAN=wall?180:90;   // a wall's face-on angle is unique mod 180
-  let best=-1,bd=0;
-  for(let d=0;d<SPAN;d+=2){const v=score(d);if(v>best){best=v;bd=d;}}
-  for(let d=bd-2;d<=bd+2;d+=.5){const dd=(d+SPAN)%SPAN,v=score(dd);if(v>best){best=v;bd=dd;}}
-  return bd>SPAN/2?bd-SPAN:bd;
+  const span=wall?Math.PI:Math.PI/2,step=2*Math.PI/180;
+  const f=wall
+    ? y=>alignScore(sub,buf,y,tx,tz,2,.004)
+    : y=>alignScore(sub,buf,y,tx,tz,0,.008)+alignScore(sub,buf,y,tx,tz,2,.008);
+  let y=scan1(f,0,span-step,step);
+  if(y>span/2)y-=span;               // report the smaller equivalent turn
+  return y;
+}
+function autoLevel(){const a=autoAlign();return{rx:a.tiltX,rz:a.tiltZ,yaw:a.yaw};}
+/* one place that writes the alignment angles into the UI */
+function showAlignAngles(){
+  const d=v=>(v*180/Math.PI).toFixed(1);
+  $('yaw').value=d(S.yaw);
+  $('yawVal').textContent=d(S.yaw)+'°';
+  $('hudYaw').textContent=d(S.yaw)+'°';
+  $('tiltVal').textContent=d(S.tiltX)+'° / '+d(S.tiltZ)+'°';
+}
+/* degrees, evaluated against the tilt currently in S (kept for the manual
+   "grid direction only" path; the staged autoAlign() fits them together) */
+function autoYaw(){
+  const sub=buildSample(S.n,40000),buf=new Float32Array(sub.length);
+  return autoYawRad(sub,buf,S.tiltX,S.tiltZ)*180/Math.PI;
 }
 function smooth(h,sig){
   const r=Math.max(1,Math.round(sig*3)),k=new Float32Array(2*r+1);let s=0;
@@ -869,7 +901,12 @@ function findBars(slab,all,layerY,acrossIdx,nrm){
     const iqr=acr[Math.floor((acr.length-1)*.75)]-acr[Math.floor((acr.length-1)*.25)];
     if(iqr*1000>TUN.maxAcrossIQRMm){REJ.wide++;REJ.minIqrMm=Math.min(REJ.minIqrMm,iqr*1000);continue;}
     // Filter ②: walls continue far above/below the slab; a rebar doesn't
-    if(isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi,nrm)){REJ.wall++;continue;}
+    // Filter ② only makes sense for a slab, where a bar has air above and below
+    // so a surface that keeps going is not a bar. A wall always has concrete or
+    // formwork behind the mat, so the same probe rejects every real bar — it is
+    // skipped there (measured: it vetoed 25/25 and 19/19 candidates on the
+    // 옹벽 scans). Filters ① and ③ still guard against blobs and flat faces.
+    if(nrm!==2&&isVerticalSurface(all,layerY,acrossIdx,pos,lo,hi,nrm)){REJ.wall++;continue;}
     let sa=0,sn=0;for(let i=0;i<cluster.length;i+=3){sa+=cluster[i+acrossIdx];sn+=cluster[i+nrm];}
     const meanA=sa/cn,meanN=sn/cn;
     const a=[0,0,0],b=[0,0,0];
@@ -1679,15 +1716,11 @@ function onDetect(){
       if(S.yaw===0&&S.tiltX===0&&S.tiltZ===0){
         const oldCrop={min:[...S.crop.min],max:[...S.crop.max]};
         const oldBounds={min:[...S.bounds.min],max:[...S.bounds.max]};
-        const t=autoLevel();S.tiltX=t.rx;S.tiltZ=t.rz;updateAlign();
-        const d=autoYaw();
-        let changed=Math.abs(t.rx)>1e-4||Math.abs(t.rz)>1e-4;
-        if(Math.abs(d)>0.9){S.yaw=d*Math.PI/180;updateAlign();changed=true;}
+        const a=autoAlign();
+        const changed=Math.abs(a.tiltX)>1e-4||Math.abs(a.tiltZ)>1e-4||Math.abs(a.yaw)>0.015;
         if(changed){
-          $('yaw').value=(S.yaw*180/Math.PI).toFixed(1);
-          $('yawVal').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
-          $('hudYaw').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
-          $('tiltVal').textContent=(t.rx*180/Math.PI).toFixed(1)+'° / '+(t.rz*180/Math.PI).toFixed(1)+'°';
+          S.yaw=a.yaw;S.tiltX=a.tiltX;S.tiltZ=a.tiltZ;updateAlign();
+          showAlignAngles();
           reframeCrop(oldCrop,oldBounds); // carry the user's crop into the new frame
         }
       }
@@ -2032,10 +2065,9 @@ window.addEventListener('drop',e=>{e.preventDefault();$('welcome').classList.rem
   const f=e.dataTransfer.files[0];if(f)loadFile(f);});
 
 $('btnAuto').onclick=()=>{
-  const t=autoLevel();S.tiltX=t.rx;S.tiltZ=t.rz;updateAlign();
-  const d=autoYaw();S.yaw=d*Math.PI/180;updateAlign();
-  $('yaw').value=d.toFixed(1);$('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
-  $('tiltVal').textContent=(t.rx*180/Math.PI).toFixed(1)+'° / '+(t.rz*180/Math.PI).toFixed(1)+'°';
+  const a=autoAlign();
+  S.yaw=a.yaw;S.tiltX=a.tiltX;S.tiltZ=a.tiltZ;updateAlign();
+  showAlignAngles();
   recomputeAligned(false);
 };
 $('yaw').oninput=e=>{
