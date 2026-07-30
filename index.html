@@ -263,6 +263,9 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <label>깊이<span class="v" id="zRangeVal">—</span></label>
       <input type="range" id="zMin" min="0" max="1000" value="0" disabled>
       <input type="range" id="zMax" min="0" max="1000" value="1000" disabled>
+      <button class="btn ghost" id="btnSection" disabled>크로핑 박스 · 표시</button>
+      <p class="note">박스의 <b>화살표를 끌면</b> 그 면이 잘리고, <b>원형 링을 끌면</b> 축이 회전합니다
+        (CloudCompare 단면 도구와 같은 방식). 빈 곳을 끌면 시점 회전입니다.</p>
       <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
       <div class="readout" style="margin-top:9px"><span>남은 점</span><span class="em" id="statKept">—</span></div>
       <div class="verdict" style="margin-top:9px">
@@ -416,6 +419,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1,0,0,0,1],
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
+  section:true, // CloudCompare-style interactive crop box
   mode:'slab',  // 'slab' (layered along Y) | 'wall' (layered along Z, thickness)
   dirs:[0,2],   // across-axes to detect; reset when the mode changes
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
@@ -1013,6 +1017,7 @@ function initGL(){
   bufPos=gl.createBuffer();bufCol=gl.createBuffer();
   bufOvPos=gl.createBuffer();bufOvCol=gl.createBuffer();
   bufAxPos=gl.createBuffer();bufAxCol=gl.createBuffer();
+  bufSecPos=gl.createBuffer();bufSecCol=gl.createBuffer();
   maxLineW=(gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)||[1,1])[1]||1;
   gl.enable(gl.DEPTH_TEST);gl.clearColor(0,0,0,0); // transparent — CSS drafting grid shows through
   uploadAxes();   // unit geometry, never changes
@@ -1093,6 +1098,73 @@ function uploadAxes(){
   gl.bindBuffer(gl.ARRAY_BUFFER,bufAxPos);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(P),gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER,bufAxCol);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(C),gl.STATIC_DRAW);
 }
+/* ---------- CloudCompare-style section box ----------
+   Wireframe crop box with a drag arrow on each of the 6 faces and a rotation
+   ring per axis. Everything lives in the ALIGNED frame (identity align, like
+   the detection overlay). Dragging an arrow moves that crop plane; dragging a
+   ring turns the box against the cloud, which in this tool means adjusting the
+   alignment angle for that axis (yaw / tiltX / tiltZ) — the same rotation the
+   detector and every export already use. */
+const SEC_EDGE=[.42,.47,.54],SEC_RING=[[.62,.24,.20],[.14,.44,.28],[.15,.33,.72]];
+let bufSecPos,bufSecCol,secEdgeN=0,secHandleN=0;
+function secGeom(){
+  if(!S.crop||!S.bounds)return null;
+  const c=S.crop,mid=[0,1,2].map(a=>(c.min[a]+c.max[a])/2);
+  const size=[0,1,2].map(a=>c.max[a]-c.min[a]);
+  const span=Math.max(...size)||1;
+  return{c,mid,size,span,arrow:span*0.13,ring:span*0.42};
+}
+/* screen-space positions of the interactive parts, for hit testing and drags */
+function secHandles(){
+  const g=secGeom();if(!g)return[];
+  const out=[];
+  for(let a=0;a<3;a++)for(const s of[0,1]){
+    const p=[...g.mid];p[a]=s?g.c.max[a]:g.c.min[a];
+    const d=[0,0,0];d[a]=s?1:-1;
+    out.push({axis:a,side:s,base:p,tip:[p[0]+d[0]*g.arrow,p[1]+d[1]*g.arrow,p[2]+d[2]*g.arrow],dir:d});
+  }
+  return out;
+}
+function uploadSection(){
+  secEdgeN=secHandleN=0;
+  const g=secGeom();if(!g||!gl)return;
+  const P=[],C=[],PH=[],CH=[];
+  const seg=(A,B,col,n,p,c)=>{for(let i=0;i<=n;i++){const t=i/n;
+    p.push(A[0]+(B[0]-A[0])*t,A[1]+(B[1]-A[1])*t,A[2]+(B[2]-A[2])*t);
+    c.push(col[0],col[1],col[2]);}};
+  // 12 edges
+  const mn=g.c.min,mx=g.c.max;
+  const V=k=>[(k&1?mx:mn)[0],(k&2?mx:mn)[1],(k&4?mx:mn)[2]];
+  for(let k=0;k<8;k++)for(const bit of[1,2,4])
+    if(!(k&bit))seg(V(k),V(k|bit),SEC_EDGE,26,P,C);
+  // 3 rotation rings around the box centre
+  for(let a=0;a<3;a++){
+    const u=(a+1)%3,v=(a+2)%3,col=SEC_RING[a],N=96;
+    for(let i=0;i<N;i++){
+      const t0=i/N*6.28318,t1=(i+1)/N*6.28318;
+      const A=[...g.mid],B=[...g.mid];
+      A[u]+=Math.cos(t0)*g.ring;A[v]+=Math.sin(t0)*g.ring;
+      B[u]+=Math.cos(t1)*g.ring;B[v]+=Math.sin(t1)*g.ring;
+      seg(A,B,col,1,P,C);
+    }
+  }
+  // 6 face arrows (thicker draw call)
+  for(const h of secHandles()){
+    const col=SEC_RING[h.axis];
+    seg(h.base,h.tip,col,18,PH,CH);
+    const u=(h.axis+1)%3,v=(h.axis+2)%3,hw=g.arrow*.34,hl=g.arrow*.42;
+    for(const ax of[u,v])for(const s of[1,-1]){
+      const q=[...h.tip];
+      q[h.axis]-=h.dir[h.axis]*hl;q[ax]+=hw*s;
+      seg(h.tip,q,col,7,PH,CH);
+    }
+  }
+  secEdgeN=P.length/3;secHandleN=PH.length/3;
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufSecPos);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([...P,...PH]),gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER,bufSecCol);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([...C,...CH]),gl.DYNAMIC_DRAW);
+}
 const persp=(f,a,n,fa)=>{const t=1/Math.tan(f/2);return[t/a,0,0,0,0,t,0,0,0,0,(fa+n)/(n-fa),-1,0,0,2*fa*n/(n-fa),0];};
 function lookAt(e,c,u){
   const z=[e[0]-c[0],e[1]-c[1],e[2]-c[2]];let l=Math.hypot(z[0],z[1],z[2])||1;z[0]/=l;z[1]/=l;z[2]/=l;
@@ -1145,6 +1217,23 @@ function draw(){
     gl.bindBuffer(gl.ARRAY_BUFFER,bufOvCol);gl.enableVertexAttribArray(loc.aCol);
     gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
     gl.drawArrays(gl.POINTS,0,ovCount);
+  }
+  if(S.section&&(secEdgeN+secHandleN)>0){
+    // aligned frame, no crop, own colours; on top so handles stay grabbable
+    gl.uniformMatrix3fv(loc.uAlign,false,new Float32Array([1,0,0,0,1,0,0,0,1]));
+    gl.uniform3fv(loc.uCropMin,new Float32Array([-1e9,-1e9,-1e9]));
+    gl.uniform3fv(loc.uCropMax,new Float32Array([1e9,1e9,1e9]));
+    gl.uniform1i(loc.uColorMode,0);gl.uniform1i(loc.uHideOutside,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufSecPos);gl.enableVertexAttribArray(loc.aPos);
+    gl.vertexAttribPointer(loc.aPos,3,gl.FLOAT,false,0,0);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufSecCol);gl.enableVertexAttribArray(loc.aCol);
+    gl.vertexAttribPointer(loc.aCol,3,gl.FLOAT,false,0,0);
+    gl.disable(gl.DEPTH_TEST);
+    gl.uniform1f(loc.uPointSize,Math.max(2,1.7*dpr));
+    gl.drawArrays(gl.POINTS,0,secEdgeN);
+    gl.uniform1f(loc.uPointSize,Math.max(5,3.6*dpr));
+    gl.drawArrays(gl.POINTS,secEdgeN,secHandleN);
+    gl.enable(gl.DEPTH_TEST);
   }
   if(S.showAxes&&axCount>0){
     // corner gizmo: own square viewport + own camera at a fixed distance, so it
@@ -1301,7 +1390,7 @@ function recomputeAligned(keep){
   const c=S.bounds,span=Math.max(c.max[0]-c.min[0],c.max[1]-c.min[1],c.max[2]-c.min[2]);
   S.cam.target=[(c.min[0]+c.max[0])/2,(c.min[1]+c.max[1])/2,(c.min[2]+c.max[2])/2];
   if(!keep)S.cam.dist=span*1.8||5;
-  clearDetection();
+  clearDetection();uploadSection();
   syncSliders();refreshStats();
 }
 /* After auto-align rotates the frame away from identity, the user's crop box
@@ -1329,7 +1418,7 @@ function reframeCrop(oldCrop,oldBounds){
   }
   const c=S.bounds;
   S.cam.target=[(c.min[0]+c.max[0])/2,(c.min[1]+c.max[1])/2,(c.min[2]+c.max[2])/2];
-  clearDetection();syncSliders();refreshStats();
+  clearDetection();uploadSection();syncSliders();refreshStats();
 }
 const enableUI=on=>['btnAuto','yaw','yMin','yMax','xMin','xMax','zMin','zMax','btnReset','btnExport','btnLayer','btnDetect']
   .forEach(id=>$(id).disabled=!on);
@@ -1351,6 +1440,7 @@ function adopt(parsed){
   $('welcome').classList.add('gone');
   enableUI(true);
   $('btnAxes').disabled=false;
+  $('btnSection').disabled=false;
   $('axisKey').classList.toggle('show',S.showAxes);
 }
 async function loadFile(f){
@@ -1956,7 +2046,7 @@ $('yaw').oninput=e=>{
 [['xMin','xMax',0],['yMin','yMax',1],['zMin','zMax',2]].forEach(([a,b,ax])=>{
   const upd=()=>{let p=s2v(ax,+$(a).value),q=s2v(ax,+$(b).value);
     if(p>q){const t=p;p=q;q=t;}
-    S.crop.min[ax]=p;S.crop.max[ax]=q;clearDetection();refreshStats();};
+    S.crop.min[ax]=p;S.crop.max[ax]=q;clearDetection();uploadSection();refreshStats();};
   $(a).oninput=upd;$(b).oninput=upd;
 });
 $('btnLayer').onclick=()=>{
@@ -1968,9 +2058,9 @@ $('btnLayer').onclick=()=>{
   const ys=pk.map(p=>lo+p*bin);
   S.crop.min[1]=Math.max(S.bounds.min[1],Math.min(...ys)-.03);
   S.crop.max[1]=Math.min(S.bounds.max[1],Math.max(...ys)+.03);
-  clearDetection();syncSliders();refreshStats();
+  clearDetection();uploadSection();syncSliders();refreshStats();
 };
-$('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();syncSliders();refreshStats();};
+$('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();uploadSection();syncSliders();refreshStats();};
 $('btnColor').onclick=()=>{
   const modes=S.hasColor?[0,1,2]:[1,2],names={0:'RGB',1:'높이',2:'단색'};
   S.colorMode=modes[(modes.indexOf(S.colorMode)+1)%modes.length];
@@ -2042,6 +2132,8 @@ syncDirOptions();
 $('btnAxes').onclick=()=>{S.showAxes=!S.showAxes;
   $('btnAxes').textContent='축 화살표 · '+(S.showAxes?'표시':'숨김');
   $('axisKey').classList.toggle('show',S.showAxes&&S.n>0);};
+$('btnSection').onclick=()=>{S.section=!S.section;
+  $('btnSection').textContent='크로핑 박스 · '+(S.section?'표시':'숨김');};
 $('btnShowCloud').onclick=()=>{S.showCloud=!S.showCloud;
   $('btnShowCloud').textContent='점군 · '+(S.showCloud?'표시':'숨김');};
 $('btnShowModel').onclick=()=>{S.showModel=!S.showModel;
@@ -2055,15 +2147,135 @@ document.querySelectorAll('#views button').forEach(b=>b.onclick=()=>{
   if(v==='side'){S.cam.elev=0;S.cam.azim=Math.PI/2;}
   if(v==='iso'){S.cam.elev=.45;S.cam.azim=.6;}
 });
+/* current view-projection, matching draw() exactly */
+function viewProj(){
+  const cv=gl.canvas,{azim,elev,dist,target}=S.cam;
+  const eye=[target[0]+dist*Math.cos(elev)*Math.sin(azim),target[1]+dist*Math.sin(elev),
+             target[2]+dist*Math.cos(elev)*Math.cos(azim)];
+  const up=Math.abs(Math.cos(elev))<.01?[0,0,-1]:[0,1,0];
+  return mul(persp(50*Math.PI/180,cv.width/cv.height,dist*.002,dist*20),lookAt(eye,target,up));
+}
+/* world (aligned frame) -> CSS pixels inside the canvas */
+function toScreen(m,p){
+  const x=m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12];
+  const y=m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13];
+  const w=m[3]*p[0]+m[7]*p[1]+m[11]*p[2]+m[15];
+  if(!(w>1e-6))return null;
+  const cv=gl.canvas;
+  return[(x/w*.5+.5)*cv.clientWidth,(1-(y/w*.5+.5))*cv.clientHeight];
+}
 (function(){
-  const cv=$('gl');let drag=false,lx=0,ly=0;
-  cv.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);});
-  cv.addEventListener('pointerup',e=>{drag=false;try{cv.releasePointerCapture(e.pointerId);}catch(_){}});
-  cv.addEventListener('pointermove',e=>{
-    if(!drag)return;
-    S.cam.azim-=(e.clientX-lx)*.006;
-    S.cam.elev=Math.max(-1.5533,Math.min(1.5533,S.cam.elev+(e.clientY-ly)*.006));
+  const cv=$('gl');
+  let mode=null,lx=0,ly=0,grab=null;
+  const local=e=>{const r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];};
+  const dist2=(a,b)=>(a[0]-b[0])**2+(a[1]-b[1])**2;
+
+  function pick(px,py){
+    if(!S.section||!S.n)return null;
+    const m=viewProj(),P=[px,py];
+    // face arrows first — they sit on top of the rings
+    let best=null,bd=18*18;
+    for(const h of secHandles()){
+      const s=toScreen(m,h.tip);if(!s)continue;
+      const d=dist2(s,P);if(d<bd){bd=d;best={type:'move',axis:h.axis,side:h.side};}
+    }
+    if(best)return best;
+    const g=secGeom();if(!g)return null;
+    bd=12*12;
+    for(let a=0;a<3;a++){
+      const u=(a+1)%3,v=(a+2)%3;
+      for(let i=0;i<72;i++){
+        const t=i/72*6.28318,q=[...g.mid];
+        q[u]+=Math.cos(t)*g.ring;q[v]+=Math.sin(t)*g.ring;
+        const s=toScreen(m,q);if(!s)continue;
+        const d=dist2(s,P);if(d<bd){bd=d;best={type:'rot',axis:a};}
+      }
+    }
+    return best;
+  }
+  cv.addEventListener('pointerdown',e=>{
+    const[px,py]=local(e);
+    const hit=pick(px,py);
     lx=e.clientX;ly=e.clientY;
+    cv.setPointerCapture(e.pointerId);
+    if(!hit){mode='orbit';return;}
+    const m=viewProj(),g=secGeom();
+    if(hit.type==='move'){
+      // screen delta produced by moving one metre along this axis
+      const o=[...g.mid],p1=[...g.mid];p1[hit.axis]+=1;
+      const a=toScreen(m,o),b=toScreen(m,p1);
+      if(!a||!b){mode='orbit';return;}
+      const d=[b[0]-a[0],b[1]-a[1]],len2=d[0]*d[0]+d[1]*d[1];
+      if(len2<1e-6){mode='orbit';return;}   // axis points at the camera
+      mode='move';grab={...hit,d,len2};
+    }else{
+      const ctr=toScreen(m,g.mid);
+      if(!ctr){mode='orbit';return;}
+      mode='rot';grab={...hit,ctr,ang:Math.atan2(py-ctr[1],px-ctr[0])};
+    }
+    cv.style.cursor=mode==='orbit'?'grabbing':'crosshair';
+  });
+  cv.addEventListener('pointerup',e=>{
+    if(mode==='move'||mode==='rot'){clearDetection();refreshStats();}
+    if(mode==='rot')recomputeAligned(true);
+    mode=null;grab=null;cv.style.cursor='';
+    try{cv.releasePointerCapture(e.pointerId);}catch(_){}
+  });
+  cv.addEventListener('pointermove',e=>{
+    const[px,py]=local(e);
+    if(!mode){cv.style.cursor=pick(px,py)?'pointer':'';return;}
+    if(mode==='orbit'){
+      S.cam.azim-=(e.clientX-lx)*.006;
+      S.cam.elev=Math.max(-1.5533,Math.min(1.5533,S.cam.elev+(e.clientY-ly)*.006));
+      lx=e.clientX;ly=e.clientY;return;
+    }
+    if(mode==='move'){
+      const mv=[e.clientX-lx,e.clientY-ly];
+      const t=(mv[0]*grab.d[0]+mv[1]*grab.d[1])/grab.len2;   // metres along the axis
+      const a=grab.axis,MIN=1e-3;
+      if(grab.side){
+        S.crop.max[a]=Math.min(S.bounds.max[a],Math.max(S.crop.min[a]+MIN,S.crop.max[a]+t));
+      }else{
+        S.crop.min[a]=Math.max(S.bounds.min[a],Math.min(S.crop.max[a]-MIN,S.crop.min[a]+t));
+      }
+      lx=e.clientX;ly=e.clientY;
+      uploadSection();syncSliders();
+      $('statKept').textContent=(S.kept=countKept()).toLocaleString();
+      $('hudKept').textContent=S.kept.toLocaleString();
+      return;
+    }
+    if(mode==='rot'){
+      const ang=Math.atan2(py-grab.ctr[1],px-grab.ctr[0]);
+      let d=ang-grab.ang;
+      while(d>Math.PI)d-=6.28318;while(d<-Math.PI)d+=6.28318;
+      grab.ang=ang;
+      // sign: a ring seen from its axis' far side turns the other way on screen
+      const m=viewProj(),g=secGeom(),n=[0,0,0];n[grab.axis]=1;
+      const c0=toScreen(m,g.mid),c1=toScreen(m,[g.mid[0]+n[0]*g.ring,g.mid[1]+n[1]*g.ring,g.mid[2]+n[2]*g.ring]);
+      let facing=1;
+      if(c0&&c1){
+        const eye=[S.cam.target[0]+S.cam.dist*Math.cos(S.cam.elev)*Math.sin(S.cam.azim),
+                   S.cam.target[1]+S.cam.dist*Math.sin(S.cam.elev),
+                   S.cam.target[2]+S.cam.dist*Math.cos(S.cam.elev)*Math.cos(S.cam.azim)];
+        const v=[eye[0]-g.mid[0],eye[1]-g.mid[1],eye[2]-g.mid[2]];
+        facing=(v[grab.axis]>=0)?1:-1;
+      }
+      const step=-d*facing;
+      if(grab.axis===1){
+        S.yaw+=step;
+        S.cam.azim+=step;          // keep the cloud visually still: the BOX turns
+        $('yaw').value=(S.yaw*180/Math.PI).toFixed(1);
+        $('yawVal').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
+        $('hudYaw').textContent=(S.yaw*180/Math.PI).toFixed(1)+'°';
+      }else{
+        const lim=8*Math.PI/180;
+        if(grab.axis===0)S.tiltX=Math.max(-lim,Math.min(lim,S.tiltX+step));
+        else S.tiltZ=Math.max(-lim,Math.min(lim,S.tiltZ+step));
+        $('tiltVal').textContent=(S.tiltX*180/Math.PI).toFixed(1)+'° / '+(S.tiltZ*180/Math.PI).toFixed(1)+'°';
+      }
+      updateAlign();uploadSection();
+      return;
+    }
   });
   cv.addEventListener('wheel',e=>{e.preventDefault();S.cam.dist*=Math.exp(e.deltaY*.0012);},{passive:false});
 })();
