@@ -1443,6 +1443,53 @@ async function srvScans(){
     srvStatus(`스캔 ${list.length}건`,'ok');
   }catch(e){sel.innerHTML='<option value="">— 스캔 목록 조회 실패 —</option>';}
 }
+/* Ranged, retrying download.
+   The HTTPS reverse proxy in front of the API stalls partway through large
+   bodies (observed: 8.9MB file returning 32KB / 16KB / nothing after a 100s
+   hang), which used to surface as an unrelated "no download API" message.
+   The API advertises accept-ranges: bytes, so pull the file in chunks and
+   retry each one; a short chunk is detected immediately instead of producing
+   a truncated PLY. content-range is not readable cross-origin without
+   Access-Control-Expose-Headers, so the total comes from a cancelled probe
+   GET (content-length IS exposed by default). */
+const DL_CHUNK=2<<20,DL_TRIES=2;
+async function downloadRanged(url,onProgress){
+  let total=0;
+  try{
+    const probe=await fetch(url,{signal:AbortSignal.timeout(20000)});
+    if(!probe.ok)return{status:probe.status,resp:probe};
+    total=+(probe.headers.get('content-length')||0);
+    try{await probe.body.cancel();}catch(_){}
+  }catch(e){throw new Error('연결 실패: '+e.message);}
+  if(!(total>0)){                       // no length advertised — single shot
+    const r=await fetch(url,{signal:AbortSignal.timeout(180000)});
+    if(!r.ok)return{status:r.status,resp:r};
+    return{status:200,buf:await r.arrayBuffer()};
+  }
+  const out=new Uint8Array(total);
+  for(let off=0;off<total;){
+    const end=Math.min(off+DL_CHUNK,total)-1,want=end-off+1;
+    let got=null,last='';
+    for(let t=0;t<DL_TRIES&&!got;t++){
+      try{
+        const r=await fetch(url,{headers:{Range:`bytes=${off}-${end}`},
+          signal:AbortSignal.timeout(45000)});
+        if(r.status!==206&&r.status!==200)throw new Error('HTTP '+r.status);
+        const b=new Uint8Array(await r.arrayBuffer());
+        if(r.status===200){              // server ignored Range: it sent everything
+          if(b.length!==total)throw new Error(`전체 응답이 잘렸습니다 ${b.length}/${total}`);
+          return{status:200,buf:b.buffer};
+        }
+        if(b.length!==want)throw new Error(`조각이 잘렸습니다 ${b.length}/${want}`);
+        got=b;
+      }catch(e){last=e.message;}
+    }
+    if(!got)throw new Error(`${(off/1048576).toFixed(1)}MB 지점에서 ${DL_TRIES}회 실패 — ${last}`);
+    out.set(got,off);off+=got.length;
+    if(onProgress)onProgress(off,total);
+  }
+  return{status:200,buf:out.buffer};
+}
 async function srvFetch(){
   SRV.base=$('srvBase').value.trim().replace(/\/+$/,'');
   localStorage.setItem('srvBase',SRV.base);
@@ -1451,20 +1498,41 @@ async function srvFetch(){
   if(!fn){srvStatus('스캔을 선택하거나 파일명을 입력하세요','bad');return;}
   srvStatus('다운로드 중… (수십 MB일 수 있습니다)','busy');
   // /analysis/ply-download?filename= is live; the others remain as fallbacks.
+  // Only a genuine "endpoint not there" (404/405) may fall through to the next
+  // candidate — every other failure is reported, or a parse error would be
+  // misdiagnosed as "the backend has no download API".
+  let netErr=null;
   for(const path of['/analysis/ply-download?filename=','/analysis/ply-file?filename=','/analysis/ply?filename=']){
+    const url=SRV.base+path+encodeURIComponent(fn);
+    let res;
     try{
-      const r=await fetch(SRV.base+path+encodeURIComponent(fn),{signal:AbortSignal.timeout(120000)});
-      if(!r.ok)continue;
-      const ct=(r.headers.get('content-type')||'').toLowerCase();
-      if(ct.includes('json'))continue;               // path-info responses are not the file
-      const buf=await r.arrayBuffer();
-      if(buf.byteLength<32)continue;
-      adopt(parsePLY(buf));
-      srvStatus(`다운로드 완료 · ${(buf.byteLength/1048576).toFixed(1)} MB`,'ok');
+      res=await downloadRanged(url,(done,total)=>srvStatus(
+        `다운로드 중… ${(done/1048576).toFixed(1)} / ${(total/1048576).toFixed(1)} MB`,'busy'));
+    }catch(e){
+      srvStatus('다운로드 실패: '+e.message+' — 서버(HTTPS 프록시)가 큰 파일 전송을 중단하고 있습니다. 잠시 후 재시도하거나 파일을 직접 열어 주세요.','bad');
       return;
-    }catch(_){}
+    }
+    if(res.status===404||res.status===405)continue;
+    if(!res.buf){
+      let d='';try{d=(await res.resp.text()).slice(0,140);}catch(_){}
+      srvStatus(`서버 오류 HTTP ${res.status}${d?' — '+d:''}`,'bad');return;
+    }
+    const buf=res.buf;
+    if(buf.byteLength<32){srvStatus('받은 파일이 비어 있습니다 ('+buf.byteLength+' B).','bad');return;}
+    try{adopt(parsePLY(buf));}
+    catch(e){
+      srvStatus(`다운로드는 됐지만 PLY를 읽지 못했습니다 (${(buf.byteLength/1048576).toFixed(1)} MB): ${e.message}`,'bad');
+      return;
+    }
+    srvStatus(`다운로드 완료 · ${(buf.byteLength/1048576).toFixed(1)} MB`,'ok');
+    return;
   }
-  // No download endpoint yet — explain using ply-path (returns server-side path only).
+  if(netErr){
+    srvStatus('서버에 접속하지 못했습니다: '+netErr.message+
+      (srvMixedBlocked()?' (HTTPS 페이지 → HTTP 서버 차단)':' — 서버 주소를 확인하세요.'),'bad');
+    return;
+  }
+  // Every candidate answered 404/405 — explain using ply-path (path string only).
   try{
     const r=await fetch(SRV.base+'/analysis/ply-path?filename='+encodeURIComponent(fn),
                         {signal:AbortSignal.timeout(15000)});
