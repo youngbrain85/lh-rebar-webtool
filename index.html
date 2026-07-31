@@ -249,20 +249,36 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 
     <div class="stage">
       <h2><b>3</b>크로핑</h2>
-      <label>세로(높이 Y) 방향 밀도 — 철근 층 선택<i class="info" data-tip="**높이(중력축) 방향 밀도**입니다. 철근 매트는 얇은 층이라 뾰족한 봉우리로 나타납니다.
-주황색 띠가 지금 선택된 높이 구간이고, ● 표시는 자동으로 찾은 층 후보입니다.
+      <label><span id="labX">가로(X) 방향 밀도</span><i class="info" data-tip="**가로(X)축을 따라 본 점 밀도**입니다.
 
-이 그래프만 전체 높이 범위를 유지합니다 — 띠를 끌어 옮기려면 바깥이 보여야 하기 때문입니다.">i</i><span class="v" id="yRangeVal">—</span></label>
-      <div class="hist-wrap"><canvas class="hist" id="histY"></canvas></div>
-      <input type="range" id="yMin" min="0" max="1000" value="0" disabled>
-      <input type="range" id="yMax" min="0" max="1000" value="1000" disabled>
-      <button class="btn" id="btnLayer" disabled>철근 층 자동 선택</button>
-      <label>가로<span class="v" id="xRangeVal">—</span></label>
+옹벽에서는 이 봉우리 하나가 **세로근 한 가닥**(위아래로 뻗은 철근)의 위치입니다.
+● 표시는 검출과 같은 기준(감도 %·최소 간격)으로 찍히므로 미리보기가 됩니다.
+크롭 구간 안에서만 다시 계산되어 슬라이더를 움직이면 함께 갱신됩니다.">i</i><span class="v" id="xPeaks">—</span></label>
+      <div class="hist-wrap"><canvas class="hist" id="histX"></canvas></div>
+      <div class="readout"><span>범위</span><span id="xRangeVal">—</span></div>
       <input type="range" id="xMin" min="0" max="1000" value="0" disabled>
       <input type="range" id="xMax" min="0" max="1000" value="1000" disabled>
-      <label>깊이<span class="v" id="zRangeVal">—</span></label>
+
+      <label><span id="labY">세로(Y) 방향 밀도</span><i class="info" data-tip="**세로(Y·높이)축을 따라 본 점 밀도**입니다.
+
+옹벽에서는 이 봉우리 하나가 **가로근 한 가닥**(좌우로 뻗은 철근)의 위치입니다.
+수평 슬랩에서는 이 축이 배근면(상면·하면)을 가르는 축이 되어, 주황색 띠로 층을 고릅니다.">i</i><span class="v" id="yPeaks">—</span></label>
+      <div class="hist-wrap"><canvas class="hist" id="histY"></canvas></div>
+      <div class="readout"><span>범위</span><span id="yRangeVal">—</span></div>
+      <input type="range" id="yMin" min="0" max="1000" value="0" disabled>
+      <input type="range" id="yMax" min="0" max="1000" value="1000" disabled>
+
+      <label><span id="labZ">깊이(Z) 방향 밀도</span><i class="info" data-tip="**깊이(Z·옹벽 폭)축을 따라 본 점 밀도**입니다.
+
+옹벽에서 이 축은 **철근이 뻗는 방향이 아니라 배근면(외측·내측)을 가르는 축**입니다.
+주황색 띠가 지금 고른 배근면 구간이고, ● 표시는 자동으로 찾은 배근면 후보입니다.
+띠를 끌어 옮겨야 하므로 이 그래프만 전체 범위를 유지합니다.">i</i><span class="v" id="zPeaks">—</span></label>
+      <div class="hist-wrap"><canvas class="hist" id="histZ"></canvas></div>
+      <div class="readout"><span>범위</span><span id="zRangeVal">—</span></div>
       <input type="range" id="zMin" min="0" max="1000" value="0" disabled>
       <input type="range" id="zMax" min="0" max="1000" value="1000" disabled>
+
+      <button class="btn" id="btnLayer" disabled>배근면 자동 선택</button>
       <button class="btn ghost" id="btnSection" disabled>크로핑 박스 · 표시</button>
       <p class="note">박스의 <b>화살표를 끌면</b> 그 면이 잘리고, <b>원형 링을 끌면</b> 축이 회전합니다
         (CloudCompare 단면 도구와 같은 방식). 빈 곳을 끌면 시점 회전입니다.</p>
@@ -277,17 +293,6 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
         <span class="chip idle" id="quality">대기</span>
         <span class="m" id="qualityMeta">—</span>
       </div>
-      <label>가로(X) 방향 밀도<i class="info" data-tip="**정렬된 가로축을 따라 점이 얼마나 몰려 있는지**를 보여줍니다.
-크로핑한 구간 안에서만 다시 계산되므로, 슬라이더를 움직이면 그래프도 함께 다시 그려집니다.
-
-● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).
-검출과 같은 기준(감도 %·최소 간격)을 쓰므로 미리보기로 볼 수 있습니다.">i</i><span class="v" id="xPeaks">—</span></label>
-      <div class="hist-wrap"><canvas class="hist" id="histX"></canvas></div>
-      <label>깊이(Z) 방향 밀도<i class="info" data-tip="**정렬된 깊이축을 따라 본 밀도**입니다.
-가로 방향과 직각인 배근(예: 상면 가로근)이 여기서 봉우리로 나타납니다.
-
-● 표시 = 피크파인딩이 찾은 봉우리(= 철근 후보).">i</i><span class="v" id="zPeaks">—</span></label>
-      <div class="hist-wrap"><canvas class="hist" id="histZ"></canvas></div>
       <p class="note">봉우리 하나가 철근 하나입니다. <b>봉우리가 뚜렷하게 분리</b>되면 검출이 잘 됩니다.</p>
     </div>
 
@@ -1013,6 +1018,16 @@ function runDetection(){
     for(const acrossIdx of S.dirs.filter(a=>ipl.includes(a))){
       const found=findBars(slab,pts,layerY,acrossIdx,nrm);
       if(!found.length)continue;
+      // Bars of one group are the same physical length: a short measurement
+      // only means that bar was partly occluded. Give them all the group's
+      // median extent so the model does not show ragged ends.
+      {
+        const rIdx=runAxis(nrm,acrossIdx);
+        const los=found.map(b=>b.start[rIdx]).sort((a,b)=>a-b);
+        const his=found.map(b=>b.end[rIdx]).sort((a,b)=>a-b);
+        const lo=los[los.length>>1],hi=his[his.length>>1];
+        if(hi>lo)for(const b of found){b.start[rIdx]=lo;b.end[rIdx]=hi;}
+      }
       const positions=found.map(b=>b.positionAcross).sort((a,b)=>a-b);
       if(positions.length>=2){
         const d=[];for(let i=1;i<positions.length;i++)d.push((positions[i]-positions[i-1])*1000);
@@ -1433,18 +1448,27 @@ function refreshStats(){
   $('xRangeVal').textContent=`${fmt(S.crop.min[0])} ~ ${fmt(S.crop.max[0])}`;
   $('yRangeVal').textContent=`${fmt(S.crop.min[1])} ~ ${fmt(S.crop.max[1])}`;
   $('zRangeVal').textContent=`${fmt(S.crop.min[2])} ~ ${fmt(S.crop.max[2])}`;
-  // Y: full range (the band must stay draggable) but only points inside the X/Z crop.
-  // X·Z: measured within their own crop interval — the density of what gets detected.
-  // markers follow the threshold boxes live (read only — no persist on redraw)
+  // Chart roles follow the structure. The LAYER axis (Y for a slab, Z for a
+  // wall) keeps its full range so the selection band stays draggable and shows
+  // 배근면 candidates; the two in-plane axes are measured inside their own crop
+  // and marked with bar peaks — one peak there is one rebar.
+  // Markers read the threshold boxes live (no persist on redraw).
   const numOr=(id,dv)=>{const v=parseFloat($(id).value);return isFinite(v)&&v>0?v:dv;};
   const barPk={promPct:numOr('tProm',TUN.prominencePct),minSepM:numOr('tSpac',TUN.minSpacingMm)/1000};
-  drawHist('histY',histogram(1,220,true,false),S.crop.min[1],S.crop.max[1],'#1245D8',
-    {promPct:10,minSepM:DET.layerMinSep});   // layer candidates, as findLayerYs uses
-  const nx=drawHist('histX',histogram(0,260,true,true),null,null,'#1245D8',barPk);
-  const nz=drawHist('histZ',histogram(2,260,true,true),null,null,'#1245D8',barPk);
-  $('xPeaks').textContent=nx?nx+'개':'—';
-  $('zPeaks').textContent=nz?nz+'개':'—';
-  const X=analysePeaks(0),Z=analysePeaks(2);
+  const layerPk={promPct:10,minSepM:DET.layerMinSep};
+  const nrm=NRM(),ipl=inPlane();
+  const ids=['histX','histY','histZ'],pk=['xPeaks','yPeaks','zPeaks'],lab=['labX','labY','labZ'];
+  const base=['가로(X)','세로(Y)','깊이(Z)'];
+  const counts=[0,0,0];
+  for(let a=0;a<3;a++){
+    const isLayer=a===nrm;
+    counts[a]=drawHist(ids[a],histogram(a,isLayer?220:260,true,!isLayer),
+      isLayer?S.crop.min[a]:null,isLayer?S.crop.max[a]:null,'#1245D8',
+      isLayer?layerPk:barPk);
+    $(pk[a]).textContent=counts[a]?counts[a]+'개':'—';
+    $(lab[a]).textContent=base[a]+' 방향 밀도'+(isLayer?' — 배근면 선택':'');
+  }
+  const X=analysePeaks(ipl[0]),Z=analysePeaks(ipl[1]);
   const total=X.n+Z.n,contrast=Math.max(X.contrast,Z.contrast);
   const chip=$('quality'),meta=$('qualityMeta');
   let cls='idle',txt='대기';
@@ -2137,14 +2161,16 @@ $('yaw').oninput=e=>{
   $(a).oninput=upd;$(b).oninput=upd;
 });
 $('btnLayer').onclick=()=>{
-  const{h,lo,hi}=histogram(1,300,true,false),sm=smooth(h,2);
+  const a=NRM();   // 배근면을 가르는 축: 슬랩은 높이 Y, 옹벽은 두께 Z
+  const{h,lo,hi}=histogram(a,300,true,false),sm=smooth(h,2);
   let mx=0;for(const v of sm)mx=Math.max(mx,v);
   const bin=(hi-lo)/(sm.length-1);
   const pk=findPeaks(sm,mx*.10,Math.max(1,Math.round(.04/bin)));
-  if(!pk.length){alert('뚜렷한 층을 찾지 못했습니다. 높이 범위를 직접 조정해 주세요.');return;}
+  const axName=a===1?'세로(Y)':'깊이(Z)';
+  if(!pk.length){alert(`뚜렷한 배근면을 찾지 못했습니다. ${axName} 범위를 직접 조정해 주세요.`);return;}
   const ys=pk.map(p=>lo+p*bin);
-  S.crop.min[1]=Math.max(S.bounds.min[1],Math.min(...ys)-.03);
-  S.crop.max[1]=Math.min(S.bounds.max[1],Math.max(...ys)+.03);
+  S.crop.min[a]=Math.max(S.bounds.min[a],Math.min(...ys)-.03);
+  S.crop.max[a]=Math.min(S.bounds.max[a],Math.max(...ys)+.03);
   clearDetection();uploadSection();syncSliders();refreshStats();
 };
 $('btnCommit').onclick=commitCrop;
