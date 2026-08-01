@@ -284,6 +284,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
         (CloudCompare 단면 도구와 같은 방식). 빈 곳을 끌면 시점 회전입니다.</p>
       <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
       <button class="btn key" id="btnCommit" disabled>정렬 · 크로핑 확정 → 검출 단계로</button>
+      <button class="btn" id="btnResume" style="display:none">크로핑 재개 (편집 잠금 해제)</button>
       <div class="srv-status" id="commitInfo"></div>
       <p class="note">확정하면 <b>회전과 크롭이 데이터에 적용</b>되어 그 결과로 고정됩니다.
         이후 검출은 이 확정본만 사용하므로 잘라낸 벽·바닥판은 아예 들어오지 않습니다.
@@ -430,7 +431,7 @@ const S={n:0,pos:null,col:null,hasColor:false,yaw:0,tiltX:0,tiltZ:0,A:[1,0,0,0,1
   bounds:null,crop:null,sample:null,kept:0,
   colorMode:1,hideOutside:false,exportAligned:true,pointSize:2,showCloud:true,showModel:true,showAxes:true,
   section:true, // CloudCompare-style interactive crop box
-  committed:false, bakedA:[1,0,0,0,1,0,0,0,1],  // rotation already applied to S.pos
+  committed:false, editLocked:false, bakedA:[1,0,0,0,1,0,0,0,1],  // rotation already applied to S.pos
   mode:'wall',  // default: 옹벽. 'wall' = layered along Z (두께/폭) | 'slab' = along Y
   dirs:[0,2],   // across-axes to detect; reset when the mode changes
   det:null,   // detection result {rebars,groups,layerYs,inputPoints,usedPoints}
@@ -691,8 +692,22 @@ function commitCrop(){
   $('btnDetect').disabled=false;
   $('statCount').textContent=S.n.toLocaleString()+
     (S.renderStride>1?` (표시 ${S.renderN.toLocaleString()})`:'');
-  $('commitInfo').textContent=`확정됨 — ${before.toLocaleString()} → ${m.toLocaleString()}점, 회전이 데이터에 적용됨`;
+  $('commitInfo').textContent=`확정됨 — ${before.toLocaleString()} → ${m.toLocaleString()}점. `+
+    `정렬·크로핑이 잠겼습니다. 다시 손보려면 "크로핑 재개"를 누르세요.`;
   $('commitInfo').className='srv-status ok';
+  setEditLock(true);
+}
+/* After 확정 the frame is fixed: rotation and cropping stay locked until
+   크로핑 재개 is pressed, so nothing can shift the data detection just ran on. */
+const EDIT_IDS=['btnAuto','yaw','structMode','xMin','xMax','yMin','yMax','zMin','zMax',
+  'btnLayer','btnReset','btnCommit'];
+function setEditLock(locked){
+  S.editLocked=locked;
+  EDIT_IDS.forEach(id=>{const el=$(id);if(el)el.disabled=locked;});
+  const rb=$('btnResume');
+  rb.style.display=locked?'':'none';
+  rb.disabled=!locked;
+  uploadSection();   // handles/rings are hidden while locked
 }
 /* one place that writes the alignment angles into the UI */
 function showAlignAngles(){
@@ -1245,8 +1260,8 @@ function uploadSection(){
   const V=k=>[(k&1?mx:mn)[0],(k&2?mx:mn)[1],(k&4?mx:mn)[2]];
   for(let k=0;k<8;k++)for(const bit of[1,2,4])
     if(!(k&bit))seg(V(k),V(k|bit),SEC_EDGE,26,P,C);
-  // 3 rotation rings around the box centre
-  for(let a=0;a<3;a++){
+  // 3 rotation rings around the box centre (also hidden once locked)
+  for(let a=0;a<(S.editLocked?0:3);a++){
     const u=(a+1)%3,v=(a+2)%3,col=SEC_RING[a],N=96;
     for(let i=0;i<N;i++){
       const t0=i/N*6.28318,t1=(i+1)/N*6.28318;
@@ -1256,8 +1271,9 @@ function uploadSection(){
       seg(A,B,col,1,P,C);
     }
   }
-  // 6 face arrows (thicker draw call)
-  for(const h of secHandles()){
+  // 6 face arrows (thicker draw call) — omitted while editing is locked, so the
+  // box reads as "fixed" rather than offering handles that would not respond
+  for(const h of(S.editLocked?[]:secHandles())){
     const col=SEC_RING[h.axis];
     seg(h.base,h.tip,col,18,PH,CH);
     const u=(h.axis+1)%3,v=(h.axis+2)%3,hw=g.arrow*.34,hl=g.arrow*.42;
@@ -1561,6 +1577,7 @@ function adopt(parsed){
   S.committed=false;S.bakedA=[1,0,0,0,1,0,0,0,1];
   $('btnDetect').disabled=true;
   $('commitInfo').textContent='';$('commitInfo').className='srv-status';
+  setEditLock(false);   // a freshly loaded cloud is editable again
   $('axisKey').classList.toggle('show',S.showAxes);
 }
 async function loadFile(f){
@@ -2150,12 +2167,15 @@ $('btnAuto').onclick=()=>{
   recomputeAligned(false);
 };
 $('yaw').oninput=e=>{
+  if(S.editLocked)return;
   const d=parseFloat(e.target.value);S.yaw=d*Math.PI/180;updateAlign();
   $('yawVal').textContent=d.toFixed(1)+'°';$('hudYaw').textContent=d.toFixed(1)+'°';
   recomputeAligned(false);
 };
 [['xMin','xMax',0],['yMin','yMax',1],['zMin','zMax',2]].forEach(([a,b,ax])=>{
-  const upd=()=>{let p=s2v(ax,+$(a).value),q=s2v(ax,+$(b).value);
+  const upd=()=>{
+    if(S.editLocked)return;              // the lock, not just the disabled attribute
+    let p=s2v(ax,+$(a).value),q=s2v(ax,+$(b).value);
     if(p>q){const t=p;p=q;q=t;}
     S.crop.min[ax]=p;S.crop.max[ax]=q;clearDetection();uploadSection();refreshStats();};
   $(a).oninput=upd;$(b).oninput=upd;
@@ -2174,6 +2194,15 @@ $('btnLayer').onclick=()=>{
   clearDetection();uploadSection();syncSliders();refreshStats();
 };
 $('btnCommit').onclick=commitCrop;
+$('btnResume').onclick=()=>{
+  setEditLock(false);
+  // editing again invalidates the fixed result — re-commit before detecting
+  S.committed=false;
+  clearDetection();
+  $('btnDetect').disabled=true;
+  $('commitInfo').textContent='편집 잠금 해제됨 — 정렬·크로핑을 마치면 다시 확정하세요.';
+  $('commitInfo').className='srv-status busy';
+};
 $('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();uploadSection();syncSliders();refreshStats();};
 $('btnColor').onclick=()=>{
   const modes=S.hasColor?[0,1,2]:[1,2],names={0:'RGB',1:'높이',2:'단색'};
@@ -2285,7 +2314,7 @@ function toScreen(m,p){
   const dist2=(a,b)=>(a[0]-b[0])**2+(a[1]-b[1])**2;
 
   function pick(px,py){
-    if(!S.section||!S.n)return null;
+    if(!S.section||!S.n||S.editLocked)return null;   // locked after 확정
     const m=viewProj(),P=[px,py];
     // face arrows first — they sit on top of the rings
     let best=null,bd=18*18;
