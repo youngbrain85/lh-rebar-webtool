@@ -534,7 +534,12 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
       <button class="btn ghost" id="btnSection" disabled>크로핑 박스 · 표시</button>
       <p class="note">박스의 <b>화살표를 끌면</b> 그 면이 잘리고, <b>원형 링을 끌면</b> 축이 회전합니다
         (CloudCompare 단면 도구와 같은 방식). 빈 곳을 끌면 시점 회전입니다.</p>
-      <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
+      <div class="pair">
+        <button class="btn ghost" id="btnUndo" disabled>되돌리기</button>
+        <button class="btn ghost" id="btnReset" disabled>범위 초기화</button>
+      </div>
+      <p class="note">되돌리기는 <b>정렬각과 크롭 범위</b>를 한 단계씩 되감습니다
+        (단축키 <b>Ctrl+Z</b>). 드래그 한 번이 한 단계입니다.</p>
       <button class="btn key" id="btnCommit" disabled>정렬 · 크로핑 확정 → 검출 단계로</button>
       <button class="btn" id="btnResume" style="display:none">크로핑 재개 (편집 잠금 해제)</button>
       <div class="srv-status" id="commitInfo"></div>
@@ -946,6 +951,7 @@ function commitCrop(){
   recomputeAligned(false);
   showAlignAngles();
   S.committed=true;
+  undoClear();          // the baked data is the new baseline
   $('btnDetect').disabled=false;
   $('statCount').textContent=S.n.toLocaleString()+
     (S.renderStride>1?` (표시 ${S.renderN.toLocaleString()})`:'');
@@ -964,7 +970,50 @@ function setEditLock(locked){
   const rb=$('btnResume');
   rb.style.display=locked?'':'none';
   rb.disabled=!locked;
+  syncUndo();
   uploadSection();   // handles/rings are hidden while locked
+}
+/* ---------- undo (alignment + cropping) ----------
+   A step is just the rotation angles and the crop box — a few numbers, so the
+   history is free. Snapshots are taken BEFORE a change, and continuous
+   controls (sliders, box drags) snapshot once per gesture on pointerdown, so
+   one undo steps back one drag rather than one pixel. Committing bakes the
+   data and clears the history; 크로핑 재개 starts a fresh one. */
+const UNDO=[],UNDO_MAX=60;
+const undoSnap=()=>({yaw:S.yaw,tiltX:S.tiltX,tiltZ:S.tiltZ,
+  min:[...S.crop.min],max:[...S.crop.max]});
+const undoSame=(a,b)=>a&&a.yaw===b.yaw&&a.tiltX===b.tiltX&&a.tiltZ===b.tiltZ&&
+  a.min.every((v,i)=>v===b.min[i])&&a.max.every((v,i)=>v===b.max[i]);
+function pushUndo(){
+  if(S.editLocked||!S.n||!S.crop)return;
+  const s=undoSnap();
+  if(undoSame(UNDO[UNDO.length-1],s))return;     // nothing actually changed
+  UNDO.push(s);
+  if(UNDO.length>UNDO_MAX)UNDO.shift();
+  syncUndo();
+}
+function undoClear(){UNDO.length=0;syncUndo();}
+function syncUndo(){
+  const b=$('btnUndo');
+  if(!b)return;
+  b.disabled=S.editLocked||!UNDO.length;
+  b.textContent=UNDO.length?`되돌리기 (${UNDO.length})`:'되돌리기';
+}
+function doUndo(){
+  if(S.editLocked||!UNDO.length)return;
+  const s=UNDO.pop();
+  S.yaw=s.yaw;S.tiltX=s.tiltX;S.tiltZ=s.tiltZ;updateAlign();
+  S.bounds=alignedBounds();                       // bounds follow the rotation
+  S.crop={min:[...s.min],max:[...s.max]};
+  for(let a=0;a<3;a++){                           // keep it inside the new bounds
+    S.crop.min[a]=Math.max(S.crop.min[a],S.bounds.min[a]);
+    S.crop.max[a]=Math.min(S.crop.max[a],S.bounds.max[a]);
+    if(S.crop.min[a]>=S.crop.max[a]){S.crop.min[a]=S.bounds.min[a];S.crop.max[a]=S.bounds.max[a];}
+  }
+  const c=S.bounds;
+  S.cam.target=[(c.min[0]+c.max[0])/2,(c.min[1]+c.max[1])/2,(c.min[2]+c.max[2])/2];
+  showAlignAngles();clearDetection();uploadSection();syncSliders();refreshStats();
+  syncUndo();
 }
 /* one place that writes the alignment angles into the UI */
 function showAlignAngles(){
@@ -1836,6 +1885,7 @@ function adopt(parsed){
   $('btnDetect').disabled=true;
   $('commitInfo').textContent='';$('commitInfo').className='srv-status';
   setEditLock(false);   // a freshly loaded cloud is editable again
+  undoClear();
   $('axisKey').classList.toggle('show',S.showAxes);
 }
 async function loadFile(f){
@@ -2427,11 +2477,14 @@ window.addEventListener('drop',e=>{e.preventDefault();$('welcome').classList.rem
   const f=e.dataTransfer.files[0];if(f)loadFile(f);});
 
 $('btnAuto').onclick=()=>{
+  pushUndo();
   const a=autoAlign();
   S.yaw=a.yaw;S.tiltX=a.tiltX;S.tiltZ=a.tiltZ;updateAlign();
   showAlignAngles();
   recomputeAligned(false);
 };
+$('yaw').addEventListener('pointerdown',pushUndo);
+$('yaw').addEventListener('keydown',e=>{if(e.key.startsWith('Arrow'))pushUndo();});
 $('yaw').oninput=e=>{
   if(S.editLocked)return;
   const d=parseFloat(e.target.value);S.yaw=d*Math.PI/180;updateAlign();
@@ -2445,8 +2498,12 @@ $('yaw').oninput=e=>{
     if(p>q){const t=p;p=q;q=t;}
     S.crop.min[ax]=p;S.crop.max[ax]=q;clearDetection();uploadSection();refreshStats();};
   $(a).oninput=upd;$(b).oninput=upd;
+  for(const id of[a,b]){const el=$(id);
+    el.addEventListener('pointerdown',pushUndo);
+    el.addEventListener('keydown',e=>{if(e.key.startsWith('Arrow'))pushUndo();});}
 });
 $('btnLayer').onclick=()=>{
+  pushUndo();
   const a=NRM();   // 배근면을 가르는 축: 슬랩은 높이 Y, 옹벽은 두께 Z
   const{h,lo,hi}=histogram(a,300,true,false),sm=smooth(h,2);
   let mx=0;for(const v of sm)mx=Math.max(mx,v);
@@ -2459,6 +2516,13 @@ $('btnLayer').onclick=()=>{
   S.crop.max[a]=Math.min(S.bounds.max[a],Math.max(...ys)+.03);
   clearDetection();uploadSection();syncSliders();refreshStats();
 };
+$('btnUndo').onclick=doUndo;
+addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&(e.key==='z'||e.key==='Z')){
+    const t=e.target;
+    if(t&&/^(INPUT|TEXTAREA)$/.test(t.tagName)&&t.type!=='range')return;  // let text fields undo themselves
+    e.preventDefault();doUndo();}
+});
 $('btnCommit').onclick=commitCrop;
 $('btnResume').onclick=()=>{
   setEditLock(false);
@@ -2469,7 +2533,7 @@ $('btnResume').onclick=()=>{
   $('commitInfo').textContent='편집 잠금 해제됨 — 정렬·크로핑을 마치면 다시 확정하세요.';
   $('commitInfo').className='srv-status busy';
 };
-$('btnReset').onclick=()=>{S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();uploadSection();syncSliders();refreshStats();};
+$('btnReset').onclick=()=>{pushUndo();S.crop={min:[...S.bounds.min],max:[...S.bounds.max]};clearDetection();uploadSection();syncSliders();refreshStats();};
 $('btnColor').onclick=()=>{
   const modes=S.hasColor?[0,1,2]:[1,2],names={0:'RGB',1:'높이',2:'단색'};
   S.colorMode=modes[(modes.indexOf(S.colorMode)+1)%modes.length];
@@ -2501,6 +2565,7 @@ $('btnTunDefault').onclick=()=>{TUN={...TUN_DEFAULT};localStorage.setItem('rebar
 ['tProm','tSpac'].forEach(id=>$(id).addEventListener('input',()=>{if(S.n)refreshStats();}));
 $('detDirs').onchange=()=>{applyDirs();clearDetection();};
 $('structMode').onchange=e=>{
+  pushUndo();
   S.mode=e.target.value;
   syncDirOptions();clearDetection();
   // axis roles changed: re-align and re-measure from scratch
@@ -2609,6 +2674,7 @@ function toScreen(m,p){
     cv.setPointerCapture(e.pointerId);
     if(!hit){mode='orbit';return;}
     const m=viewProj(),g=secGeom();
+    pushUndo();
     if(hit.type==='move'){
       // screen delta produced by moving one metre along this axis
       const o=[...g.mid],p1=[...g.mid];p1[hit.axis]+=1;
