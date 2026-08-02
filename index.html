@@ -1,22 +1,281 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>철근 스캔 분석 — 크로핑 · 검출 · 3D 모델</title>
+<link rel="icon" href="https://office-dashboard-xi.vercel.app/brand/briconlab-icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* ==========================================================================
+   BRICON LAB Design System — v1 (2026-08-01), inlined verbatim.
+   Source: https://office-dashboard-xi.vercel.app/brand/briconlab.css
+   Inlined rather than <link>ed on purpose: this tool must keep working as a
+   single offline file. Re-sync by fetching that URL and replacing this block.
+   The fonts stay linked — if they fail offline the stacks fall back to system
+   faces, which degrades quietly instead of losing the whole design.
+   ========================================================================== */
+/*!
+ * BRICON LAB Design System — v1 (2026-08-01)
+ * 프레임워크 무관 드롭인 스타일시트. 링크 한 줄로 브랜드 톤을 가져다 쓴다.
+ *
+ *   <link rel="stylesheet" href="https://office-dashboard-xi.vercel.app/brand/briconlab.css">
+ *   <link rel="preconnect" href="https://fonts.googleapis.com">
+ *   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+ *
+ * 색은 briconlab.com에서 직접 샘플링했다(네이비 #002961, 바탕 #f4f4f4, 잉크 #333).
+ * 자세한 사용 규칙은 docs/design-system.md 참고.
+ */
+
+/* ─────────────────────────────────────────────── 1. 토큰 */
+:root {
+  /* 브랜드 */
+  --bl-navy: #002961; /* 로고와 동일 — 강조·헤딩·주요 버튼 */
+  --bl-navy-8: #345684;
+  --bl-navy-6: #4e73a9;
+  --bl-navy-2: #b9c8de;
+  --bl-navy-0: #eef2f8; /* 선택 상태 배경 */
+
+  /* 바탕·면 */
+  --bl-paper: #f4f4f4; /* 페이지 바탕 */
+  --bl-surface: #ffffff; /* 카드·패널 */
+  --bl-dot: rgba(0, 41, 97, 0.11); /* 격자 점 */
+  --bl-rule: rgba(0, 41, 97, 0.14); /* 얇은 구분선 */
+
+  /* 글자 */
+  --bl-ink: #333333; /* 본문 */
+  --bl-ink-dim: #6b7280; /* 보조 설명 */
+  --bl-ink-faint: rgba(0, 41, 97, 0.55); /* 마이크로 라벨 */
+
+  /* 판정 색 — 철근 분석의 의미 색. 앱 간 반드시 동일하게 유지할 것 */
+  --bl-pass: #2f9e44; /* 정상 (허용오차 이내) */
+  --bl-warn: #f08c00; /* 허용초과 */
+  --bl-missing: #e03131; /* 미시공 */
+  --bl-extra: #1971c2; /* 도면 외 */
+  --bl-mesh: #5c7cfa; /* 스캔 메시 참조 레이어 */
+  --bl-ghost: #8a94a6; /* 설계모델 고스트 */
+
+  /* 서체 */
+  --bl-font-sans: "Noto Sans KR", system-ui, -apple-system, sans-serif;
+  --bl-font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* 리듬 */
+  --bl-radius: 4px;
+  --bl-radius-lg: 8px;
+  --bl-gap: 12px;
+  --bl-dot-size: 22px;
+
+  --bl-shadow-hover: 0 6px 18px rgba(0, 41, 97, 0.09);
+  --bl-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ─────────────────────────────────────────────── 2. 바탕 */
+.bl-ground,
+body.bl-ground {
+  color: var(--bl-ink);
+  background-color: var(--bl-paper);
+  /* 점 격자 — 선 모눈보다 조용해서 흰 카드가 또렷하게 뜬다 */
+  background-image: radial-gradient(var(--bl-dot) 1px, transparent 1px);
+  background-size: var(--bl-dot-size) var(--bl-dot-size);
+  background-position: -1px -1px;
+  background-attachment: fixed;
+  font-family: var(--bl-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ─────────────────────────────────────────────── 3. 타이포 */
+.bl-title {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--bl-ink);
+  margin: 0;
+}
+.bl-title--xl { font-size: 24px; }
+.bl-title--lg { font-size: 19px; }
+.bl-title--md { font-size: 16px; }
+
+.bl-dim { color: var(--bl-ink-dim); font-size: 13px; }
+
+/* 섹션 위 작은 대문자 라벨 — 화면의 위계를 조용히 잡아준다 */
+.bl-microlabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bl-ink-faint);
+}
+
+/* 치수·ID·좌표는 반드시 고정폭 + tabular-nums (자리수가 흔들리면 계측값으로 안 읽힌다) */
+.bl-mono {
+  font-family: var(--bl-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────── 4. 면(surface) */
+.bl-card {
+  background: var(--bl-surface);
+  border: 1px solid var(--bl-rule);
+  border-radius: var(--bl-radius);
+  padding: 12px;
+}
+.bl-card--interactive {
+  cursor: pointer;
+  transition: box-shadow 140ms ease, transform 140ms ease, border-color 140ms ease;
+}
+.bl-card--interactive:hover {
+  box-shadow: var(--bl-shadow-hover);
+  transform: translateY(-1px);
+  border-color: var(--bl-navy);
+}
+/* 선택된 항목: 왼쪽에 네이비 인디케이터 */
+.bl-card--selected {
+  border-color: var(--bl-navy);
+  background: var(--bl-navy-0);
+  box-shadow: inset 3px 0 0 var(--bl-navy);
+}
+
+.bl-panel {
+  background: var(--bl-surface);
+  border: 1px solid var(--bl-rule);
+  border-radius: var(--bl-radius);
+}
+
+.bl-hairline { border-color: var(--bl-rule) !important; }
+.bl-divider { border: 0; border-top: 1px solid var(--bl-rule); margin: 12px 0; }
+
+/* 상단 바 — 반투명 + 블러로 아래 내용이 비치게 */
+.bl-header {
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--bl-rule);
+}
+
+/* ─────────────────────────────────────────────── 5. 컨트롤 */
+.bl-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  padding: 6px 12px;
+  border-radius: var(--bl-radius);
+  border: 1px solid transparent;
+  background: var(--bl-navy);
+  color: #fff;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.bl-btn:hover { filter: brightness(1.15); }
+.bl-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+.bl-btn--ghost {
+  background: transparent;
+  color: var(--bl-ink);
+  border-color: var(--bl-rule);
+}
+.bl-btn--ghost:hover { background: var(--bl-navy-0); filter: none; }
+
+.bl-btn--danger { background: var(--bl-missing); }
+
+.bl-input {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--bl-rule);
+  border-radius: var(--bl-radius);
+  background: var(--bl-surface);
+  color: var(--bl-ink);
+}
+.bl-input:focus {
+  outline: none;
+  border-color: var(--bl-navy);
+  box-shadow: 0 0 0 2px rgba(0, 41, 97, 0.12);
+}
+
+/* ─────────────────────────────────────────────── 6. 배지·판정 */
+.bl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: var(--bl-radius);
+  background: var(--bl-navy-0);
+  color: var(--bl-navy);
+}
+.bl-badge--pass { background: #eaf6ed; color: var(--bl-pass); }
+.bl-badge--warn { background: #fef3e2; color: #b56a00; }
+.bl-badge--missing { background: #fdecec; color: var(--bl-missing); }
+.bl-badge--extra { background: #e7f0fa; color: var(--bl-extra); }
+.bl-badge--live { background: var(--bl-missing); color: #fff; }
+
+/* 색 스와치 — 3D 뷰어 범례에 쓴다 */
+.bl-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+/* ─────────────────────────────────────────────── 7. 모션 */
+@keyframes bl-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+/* 목록 항목에 인덱스별 animation-delay(약 35~40ms)를 주면 순차 등장한다 */
+.bl-rise { animation: bl-rise 0.32s var(--bl-ease) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-rise { animation: none; }
+  .bl-card--interactive { transition: none; }
+}
+
+/* ─────────────────────────────────────────────── 8. 스크롤바 */
+.bl-ground * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 41, 97, 0.25) transparent;
+}
+.bl-ground *::-webkit-scrollbar { width: 10px; height: 10px; }
+.bl-ground *::-webkit-scrollbar-thumb {
+  background: rgba(0, 41, 97, 0.22);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.bl-ground *::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 41, 97, 0.4);
+  background-clip: content-box;
+}
+
+::selection { background: rgba(0, 41, 97, 0.16); }
+
+/* ========================================================================== */
+
 /* ============================================================
    Design: engineering document console — a white letterheaded
    control rail (BriconLab-navy header, cobalt primary, square
    corners, mono numerals) beside a paper drafting-sheet viewport.
    ============================================================ */
 :root{
-  --ground:#E9EDF2; --panel:#FFFFFF; --panel-2:#F3F5F8; --line:#DCE1E8; --line-2:#C6CED8;
-  --ink:#1C2530; --ink-dim:#515D6C; --ink-faint:#6C7784;
-  --navy:#002961; --accent:#1245D8; --accent-hi:#2E5BE4; --accent-ink:#FFFFFF;
+  /* Everything below derives from the BRICON LAB tokens above so the tool and
+     the dashboard stay one system; only viewport-specific values are local. */
+  --ground:var(--bl-paper); --panel:var(--bl-surface); --panel-2:var(--bl-navy-0);
+  --line:var(--bl-rule); --line-2:var(--bl-navy-2);
+  --ink:var(--bl-ink); --ink-dim:var(--bl-ink-dim); --ink-faint:var(--bl-ink-faint);
+  --navy:var(--bl-navy); --accent:var(--bl-navy); --accent-hi:var(--bl-navy-8);
+  --accent-ink:#FFFFFF;
   --ok:#14814B; --warn:#96660F; --bad:#C03A28;
-  --sheet:#FAFBFC; --sheet-grid:#EBEEF2; --sheet-grid-2:#DDE3E9;
-  --sheet-ink:#2E3742; --sheet-dim:#5F6B7A; --sheet-line:#D7DDE4; --sheet-num:#1245D8;
-  --mono:"Cascadia Code",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
-  --r:3px;
+  /* drafting sheet — brand paper with the brand dot grid, tuned so the
+     contrast work on the rebar overlay colours still holds */
+  --sheet:var(--bl-paper); --sheet-dot:var(--bl-dot);
+  --sheet-ink:var(--bl-ink); --sheet-dim:var(--bl-ink-dim);
+  --sheet-line:var(--bl-rule); --sheet-num:var(--bl-navy);
+  --mono:var(--bl-font-mono);
+  --sans:var(--bl-font-sans);
+  --r:var(--bl-radius);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:13px/1.55 var(--sans);
@@ -30,11 +289,13 @@ button,input,select{font-family:inherit}
 /* ---- console rail (white, letterheaded) ---- */
 #rail{width:346px;flex:0 0 346px;background:var(--panel);border-right:1px solid var(--line);
   overflow-y:auto;display:flex;flex-direction:column}
-#rail::-webkit-scrollbar{width:9px}
-#rail::-webkit-scrollbar-thumb{background:#B9C2CE;border-radius:0}
+#rail{scrollbar-width:thin;scrollbar-color:rgba(0,41,97,.25) transparent}
+#rail::-webkit-scrollbar{width:10px}
+#rail::-webkit-scrollbar-thumb{background:rgba(0,41,97,.22);border-radius:999px;
+  border:3px solid transparent;background-clip:content-box}
 .brand{padding:14px 18px 13px;background:#fff;border-bottom:1px solid var(--line)}
 .logo{margin-bottom:12px}
-.logo img{display:block;width:208px;max-width:100%;height:auto}
+.logo img{display:block;height:26px;width:auto;max-width:100%}
 .brand h1{margin:0;font:650 15px/1.3 var(--sans);letter-spacing:-.01em;color:var(--navy)}
 
 .stage{border-bottom:1px solid var(--line);padding:15px 18px}
@@ -124,12 +385,11 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 .srv-status.ok{color:var(--ok)} .srv-status.bad{color:var(--bad)} .srv-status.busy{color:var(--warn)}
 
 /* ---- drafting-sheet viewport ---- */
-#stage{flex:1;position:relative;min-width:0;background:
-  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  var(--sheet)}
+#stage{flex:1;position:relative;min-width:0;
+  background-color:var(--sheet);
+  background-image:radial-gradient(var(--sheet-dot) 1px,transparent 1px);
+  background-size:var(--bl-dot-size) var(--bl-dot-size);
+  background-position:-1px -1px}
 #gl{width:100%;height:100%;display:block}
 #hud{position:absolute;top:14px;left:14px;padding:9px 12px;border-radius:var(--r);
   background:rgba(255,255,255,.86);border:1px solid var(--sheet-line);backdrop-filter:blur(7px);
@@ -159,21 +419,14 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
 /* ---- welcome (drafting sheet, empty state) ----
    Opaque: it must fully cover the HUD/view buttons underneath (they are
    dead until data loads because #welcome intercepts pointer events). */
-#welcome{position:absolute;inset:0;display:grid;place-items:center;padding:28px;background:
-  radial-gradient(85% 65% at 50% 40%,rgba(255,255,255,.92) 0%,rgba(255,255,255,0) 72%),
-  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  var(--sheet)}
+#welcome{position:absolute;inset:0;display:grid;place-items:center;padding:28px;
+  background-color:var(--sheet);
+  background-image:radial-gradient(rgba(255,255,255,.92) 0%,rgba(255,255,255,0) 72%),
+    radial-gradient(var(--sheet-dot) 1px,transparent 1px);
+  background-size:auto,var(--bl-dot-size) var(--bl-dot-size);
+  background-position:center,-1px -1px}
 #welcome.gone{display:none}
-#welcome.over{background:
-  radial-gradient(85% 65% at 50% 40%,rgba(18,69,216,.13) 0%,rgba(18,69,216,.04) 72%),
-  linear-gradient(to right,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to bottom,var(--sheet-grid-2) 1px,transparent 1px) 0 0/120px 120px,
-  linear-gradient(to right,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  linear-gradient(to bottom,var(--sheet-grid) 1px,transparent 1px) 0 0/24px 24px,
-  var(--sheet)}
+#welcome.over{background-color:var(--bl-navy-0)}
 .wrap{text-align:center}
 .cta{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .cta button{padding:13px 24px;border-radius:var(--r);cursor:pointer;font:600 13.5px/1 var(--sans);
@@ -413,7 +666,7 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
     <div id="axisKey">
       <span><i style="background:#BF2921"></i>가로 X</span>
       <span><i style="background:#148249"></i>높이 Y</span>
-      <span><i style="background:#1245D8"></i>깊이 Z</span>
+      <span><i style="background:#002961"></i>깊이 Z</span>
     </div>
     <div id="tip">드래그 회전 · 휠 확대</div>
     <div id="legend"></div>
@@ -1095,7 +1348,7 @@ function applyDirs(){
   const v=$('detDirs').value,ipl=inPlane();
   S.dirs=v==='a0'?[ipl[0]]:v==='a1'?[ipl[1]]:[...ipl];
 }
-/* Palette tuned for the white drafting sheet — every color >=3:1 vs #FAFBFC
+/* Palette tuned for the drafting sheet — every color >=3:1 vs the brand paper #f4f4f4
    (WCAG 1.4.11 graphical minimum). Keep in sync with #legend and MAT_DEFS. */
 function barColor(layer,acrossAxis,layerCount){
   const isTop=layerCount<=1||layer===layerCount-1,isBottom=layerCount>1&&layer===0;
@@ -1127,7 +1380,7 @@ const FS=`precision mediump float;varying vec3 vCol;varying float vDim;
 void main(){vec2 d=gl_PointCoord-vec2(0.5);
   if(dot(d,d)>0.25)discard;
   // dimmed (out-of-crop) points fade toward the paper, not toward black
-  gl_FragColor=vec4(mix(vec3(0.973),vCol,vDim),1.0);}`;
+  gl_FragColor=vec4(mix(vec3(0.957),vCol,vDim),1.0);}`;
 
 function initGL(){
   gl=$('gl').getContext('webgl',{antialias:true,alpha:true,premultipliedAlpha:true});
@@ -1197,7 +1450,8 @@ function uploadOverlay(){
    Drawn as a fixed-size triad in a screen corner with its own viewport and
    camera — anchoring it to the cloud's corner pushed it off-screen. Unit
    geometry, built once; only the camera direction changes. */
-const AXIS_RGB=[[0.75,0.16,0.13],[0.08,0.51,0.29],[0.07,0.27,0.85]];
+const BL_NAVY='#002961';
+const AXIS_RGB=[[0.75,0.16,0.13],[0.08,0.51,0.29],[0.0,0.16,0.38]];
 const GIZMO_PX=88,GIZMO_PAD=14,GIZMO_BOTTOM=54;
 function uploadAxes(){
   axCount=0;
@@ -1411,7 +1665,7 @@ function drawHist(id,data,lo2,hi2,stroke,peak){
     i?ctx.lineTo(x,y):ctx.moveTo(x,y);
   }
   ctx.lineTo(cv.width,cv.height);ctx.lineTo(0,cv.height);ctx.closePath();
-  ctx.fillStyle='rgba(18,69,216,.07)';ctx.fill();
+  ctx.fillStyle='rgba(0,41,97,.07)';ctx.fill();
   ctx.beginPath();
   for(let i=0;i<sm.length;i++){
     const x=i/(sm.length-1)*cv.width,y=cv.height-(sm[i]/mx)*(cv.height-5)-2.5;
@@ -1483,7 +1737,7 @@ function refreshStats(){
   for(let a=0;a<3;a++){
     const isLayer=a===nrm;
     counts[a]=drawHist(ids[a],histogram(a,isLayer?220:260,true,!isLayer),
-      isLayer?S.crop.min[a]:null,isLayer?S.crop.max[a]:null,'#1245D8',
+      isLayer?S.crop.min[a]:null,isLayer?S.crop.max[a]:null,BL_NAVY,
       isLayer?layerPk:barPk);
     $(pk[a]).textContent=counts[a]?counts[a]+'개':'—';
     $(lab[a]).textContent=base[a]+' 방향 밀도'+(isLayer?' — 배근면 선택':'');
@@ -2435,6 +2689,7 @@ function toScreen(m,p){
   cv.addEventListener('wheel',e=>{e.preventDefault();S.cam.dist*=Math.exp(e.deltaY*.0012);},{passive:false});
 })();
 
+document.body.classList.add('bl-ground');
 initGL();
 S.bounds={min:[-1,-1,-1],max:[1,1,1]};S.crop={min:[-1,-1,-1],max:[1,1,1]};
 $('srvBase').value=SRV.base;
