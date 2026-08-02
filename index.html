@@ -1617,7 +1617,7 @@ async function srvSites(){
     const sel=$('srvSite'),prev=sel.value;sel.innerHTML='';
     for(const s of list){
       const o=document.createElement('option');
-      o.value=s.site_id;o.textContent=`${s.site_id} · ${s.site_name}`;
+      o.value=s.site_id;o.textContent=`${s.site_id} · ${fixKo(s.site_name)}`;
       sel.appendChild(o);
     }
     sel.disabled=!list.length;
@@ -1628,6 +1628,30 @@ async function srvSites(){
     if(sel.value)srvScans();
   }catch(e){srvStatus('조회 실패: '+e.message,'bad');}
 }
+/* The API returns Korean DB columns as EUC-KR bytes widened to latin-1
+   characters ("웹앱연동테스트" arrives as "À¥¾Û¿¬µ¿Å×½ºÆ®"), while its own
+   generated messages are proper UTF-8. Repair those strings for display.
+   Guarded so it is a no-op once the backend serves UTF-8: real Hangul has
+   codepoints far above 255, and a decode that does not yield clean Hangul is
+   left untouched. */
+function fixKo(s){
+  if(typeof s!=='string'||!s)return s;
+  let hasHigh=false;
+  for(let i=0;i<s.length;i++){
+    const c=s.charCodeAt(i);
+    if(c>0xFF)return s;                    // already real text (Hangul etc.)
+    if(c>=0x80)hasHigh=true;               // looks like a widened legacy byte
+  }
+  if(!hasHigh)return s;                    // plain ASCII: nothing to repair
+  try{
+    const bytes=new Uint8Array(s.length);
+    for(let i=0;i<s.length;i++)bytes[i]=s.charCodeAt(i);
+    const dec=new TextDecoder('euc-kr',{fatal:false}).decode(bytes);
+    if(/[가-힣]/.test(dec)&&dec.indexOf('�')<0)return dec;
+  }catch(_){}
+  return s;
+}
+
 /* GET /analysis/scan-list?site_id= -> scan_list[{scan_id, file_name, source_filename,
    inspector, upload_time}]. The download key is file_name (scan_id is a DB row id). */
 async function srvScans(){
@@ -1646,7 +1670,7 @@ async function srvScans(){
       o.value=s.file_name;
       o.dataset.scanId=s.scan_id;
       const t=(s.upload_time||'').slice(5,16);
-      o.textContent=`${t} · ${s.inspector||'-'} · ${s.source_filename||s.file_name}`;
+      o.textContent=`${t} · ${fixKo(s.inspector)||'-'} · ${fixKo(s.source_filename)||s.file_name}`;
       sel.appendChild(o);
     }
     sel.disabled=false;
