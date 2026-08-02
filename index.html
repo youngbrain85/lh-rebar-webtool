@@ -371,6 +371,12 @@ details.sub .inner{padding:2px 11px 11px;border-top:1px solid var(--line)}
           <input type="text" id="dashSite" placeholder="예: 5" spellcheck="false">
           <label>촬영 시각</label>
           <input type="text" id="dashTime" placeholder="YYYY-MM-DDTHH:MM" spellcheck="false">
+          <label>스캔 이름 (선택)<i class="info" data-tip="대시보드 스캔 목록에 표시될 이름입니다.
+
+비워 두면 날짜·시간만 나옵니다 (예: 스캔 2026-07-30 21:15).
+적어 두면 &quot;이름 · 날짜 시간&quot; 형태로 표시됩니다.
+한글도 그대로 저장됩니다.">i</i></label>
+          <input type="text" id="dashLabel" placeholder="예: 강남 옹벽 3구간 상단">
           <label>업로드 토큰 (이 브라우저에만 저장)</label>
           <input type="password" id="dashToken" placeholder="SCAN_UPLOAD_TOKEN" spellcheck="false">
           <button class="btn key" id="btnDashUp" disabled>대시보드 업로드</button>
@@ -2059,6 +2065,11 @@ async function uploadDashboard(){
   const fd=new FormData();
   fd.append('site_id',site);
   fd.append('captured_at',when);
+  // Optional display name. FormData always encodes field values as UTF-8, so
+  // Korean survives the round trip; the dashboard falls back to a date-only
+  // name when this is omitted.
+  const label=$('dashLabel').value.trim();
+  if(label)fd.append('label',label);
   fd.append('rebars',new Blob([dashRebarsJSON(r)],{type:'application/json'}),'rebars.json');
   const btn=$('btnDashUp');btn.disabled=true; // no double-submit (each POST makes a new scan record)
   say('업로드 중… ('+r.rebars.length+'개 철근)','busy');
